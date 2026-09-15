@@ -6,5 +6,5 @@ workers_dev = true
 [[d1_databases]]
 binding = "DB"
 database_name = "move-car-db"
-database_id = "270965ef-fbc5-4306-967f-17845f76211e"
+database_id = "474f1d5a-e4bc-4081-8eb6-47a8be2fa577"
 migrations_dir = "migrations"
