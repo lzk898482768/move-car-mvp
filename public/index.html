@@ -35,8 +35,9 @@
         <h2>1 · 车辆与通知方式</h2>
         <form id="bindForm" class="grid-form">
           <label class="span-2">车牌号
+            <input id="plateNumber" name="plateNumber" placeholder="例如 粤A12345" autocomplete="off" />
             <div id="plateNumberHost" class="plate-input-host"></div>
-            <span class="field-hint">点选省份简称与字母 / 数字，新能源车牌自动多一位。</span>
+            <span class="field-hint">点击车牌框，用专用键盘点选；新能源车牌自动多一位（8 位）。</span>
           </label>
 
           <label class="span-2">企业微信机器人 Webhook（可选）
@@ -83,6 +84,6 @@
       <a href="./setup.html"><span class="ic">ℹ️</span>说明</a>
     </nav>
 
-    <script src="./app.js" type="module"></script>
+    <script src="./app.js?v=20260915b" type="module"></script>
   </body>
 </html>

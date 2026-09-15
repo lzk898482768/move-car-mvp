@@ -162,12 +162,12 @@ function setupBindPage() {
   const form = $("#bindForm");
   const result = $("#bindResult");
   if (!form) return;
-  const plateInput = createPlateInput($("#plateNumberHost"), { allowTypeSwitch: true });
+  // 组件挂载成功后接管并隐藏原生 input，值始终同步回 input，保证任何情况下都能读到
+  const plateInput = createPlateInput($("#plateNumberHost"), { input: $("#plateNumber"), allowTypeSwitch: true });
 
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
-    const plate = plateInput.getValue();
-    if (!plateInput.isValid()) throw new Error("请点选完整车牌（普通 7 位 / 新能源 8 位）。");
+    const plate = normalizePlate($("#plateNumber")?.value ?? "");
     const wechatWorkWebhook = form.wechatWorkWebhook.value.trim();
     const showdocWebhook = form.showdocWebhook.value.trim();
     const showdocToken = form.showdocToken.value.trim();
@@ -178,6 +178,7 @@ function setupBindPage() {
 
     showResult(result, "正在创建…");
     try {
+      if (plateInput && !plateInput.isValid()) throw new Error("请点选完整车牌（普通 7 位 / 新能源 8 位）。");
       validatePlate(plate);
       if (ownerPin && !/^\d{4,12}$/.test(ownerPin)) throw new Error("管理密码请使用 4-12 位数字。");
       const channels = [];
@@ -360,6 +361,7 @@ function renderTokenPicker() {
       <p class="muted">换手机、换浏览器或清了缓存？用「车牌号 + 创建时设置的管理密码」即可重新进入。</p>
       <form id="recoverForm" class="grid-form" style="margin-top:12px">
         <label class="span-2">车牌号
+          <input id="rcPlate" placeholder="例如 粤A12345" autocomplete="off" />
           <div id="rcPlateHost" class="plate-input-host"></div>
         </label>
         <label class="span-2">管理密码
@@ -394,12 +396,12 @@ function renderTokenPicker() {
   });
 
   const rcForm = $("#recoverForm", mount);
-  const rcPlateInput = createPlateInput($("#rcPlateHost", mount), { allowTypeSwitch: true });
+  const rcPlateInput = createPlateInput($("#rcPlateHost", mount), { input: $("#rcPlate", mount), allowTypeSwitch: true });
   rcForm?.addEventListener("submit", async (e) => {
     e.preventDefault();
     const rcResult = $("#recoverResult", mount);
-    const plate = rcPlateInput.getValue();
-    if (!rcPlateInput.isValid()) { showResult(rcResult, "请点选完整车牌（普通 7 位 / 新能源 8 位）。", true); return; }
+    const plate = normalizePlate($("#rcPlate", mount)?.value ?? "");
+    if (rcPlateInput && !rcPlateInput.isValid()) { showResult(rcResult, "请点选完整车牌（普通 7 位 / 新能源 8 位）。", true); return; }
     const pin = $("#rcPin", mount).value.trim();
     showResult(rcResult, "正在验证…");
     try {
@@ -780,6 +782,7 @@ async function renderAdminConsole(token) {
       <p class="muted">通知无法送达时，用于人工联系车主。查询行为仅限管理员账号。</p>
       <form id="adminLookupForm" class="grid-form" style="margin-top:12px">
         <label class="span-2">车牌号
+          <input id="lkPlate" placeholder="例如 粤A12345" autocomplete="off" />
           <div id="lkPlateHost" class="plate-input-host"></div>
         </label>
         <button type="submit" class="btn btn-primary span-2">查询</button>
@@ -955,12 +958,12 @@ async function renderAdminConsole(token) {
   });
 
   // 车牌查询
-  const lkPlateInput = createPlateInput($("#lkPlateHost", mount), { allowTypeSwitch: true });
+  const lkPlateInput = createPlateInput($("#lkPlateHost", mount), { input: $("#lkPlate", mount), allowTypeSwitch: true });
   $("#adminLookupForm", mount).addEventListener("submit", async (e) => {
     e.preventDefault();
     const result = $("#adminLookupResult", mount);
-    const lkPlate = lkPlateInput.getValue();
-    if (!lkPlateInput.isValid()) { showResult(result, "请点选完整车牌（普通 7 位 / 新能源 8 位）。", true); return; }
+    const lkPlate = normalizePlate($("#lkPlate", mount)?.value ?? "");
+    if (lkPlateInput && !lkPlateInput.isValid()) { showResult(result, "请点选完整车牌（普通 7 位 / 新能源 8 位）。", true); return; }
     showResult(result, "正在查询…");
     try {
       const r = await api.adminLookup(token, lkPlate);
@@ -1229,6 +1232,7 @@ function openVehicleEditor(token, vehicle) {
     title: isEdit ? `编辑车牌 #${vehicle.id}` : "新增车牌绑定",
     body: `<div class="grid-form" style="margin-top:6px">
         <label class="span-2">车牌号
+          <input id="vePlate" value="${escapeHtml(vehicle?.plateNumber || "")}" placeholder="例如 粤A12345" />
           <div id="vePlateHost" class="plate-input-host"></div>
         </label>
         <label class="span-2">车主手机号（短信 / 隐私号需要）
@@ -1255,11 +1259,15 @@ function openVehicleEditor(token, vehicle) {
       </div>`,
     confirmText: isEdit ? "保存修改" : "创建绑定",
     onOpen: () => {
-      vePlateInput = createPlateInput($("#vePlateHost"), { value: vehicle?.plateNumber, allowTypeSwitch: true });
+      vePlateInput = createPlateInput($("#vePlateHost"), {
+        input: $("#vePlate"),
+        value: vehicle?.plateNumber,
+        allowTypeSwitch: true,
+      });
     },
     onConfirm: async () => {
       const payload = {
-        plateNumber: vePlateInput.getValue(),
+        plateNumber: normalizePlate($("#vePlate")?.value ?? ""),
         ownerPhone: $("#vePhone").value.trim(),
         wechatWorkWebhook: $("#veWechat").value.trim(),
         showdocWebhook: $("#veShowdoc").value.trim(),
@@ -1268,6 +1276,7 @@ function openVehicleEditor(token, vehicle) {
       };
       const pin = $("#vePin").value.trim();
       if (pin) payload.ownerPin = pin;
+      if (vePlateInput && !vePlateInput.isValid()) return toast("请点选完整车牌（普通 7 位 / 新能源 8 位）", "err");
       if (payload.smsEnabled || payload.privacyCallEnabled) {
         if (!payload.ownerPhone && !vehicle?.ownerPhone) return toast("开启短信/隐私号需填写手机号", "err");
       }

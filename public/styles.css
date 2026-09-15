@@ -626,19 +626,61 @@ select {
 .plate-box.active { border-color: var(--brand-1); box-shadow: 0 0 0 3px rgba(22, 163, 74, .18); }
 .plate-box.last-new.filled { background: var(--grad); color: #fff; border-color: transparent; }
 
-.plate-kb { background: #f6fef9; border: 1px solid #dcfce7; border-radius: 14px; padding: 10px; }
-.plate-kb-hint { font-size: 12px; color: #15803d; margin-bottom: 8px; text-align: center; }
-.plate-kb-grid { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; }
-.plate-kb-grid.wrap-many { max-width: 360px; margin: 0 auto; }
+.plate-picker-hint { font-size: 12px; color: var(--text-mute); }
+
+/* 原生 input 仅作为值载体：组件挂载成功后隐藏（挂载失败时它仍可见可输入，兜底） */
+.plate-carrier { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+
+/* ---- 底部弹出键盘（参考开源 uni-app 车牌键盘） ---- */
+.plate-kb-layer { position: fixed; inset: 0; z-index: 300; visibility: hidden; }
+.plate-kb-layer.show { visibility: visible; }
+.plate-kb-mask {
+  position: absolute; inset: 0; background: rgba(9, 30, 20, .45);
+  opacity: 0; transition: opacity .22s ease;
+}
+.plate-kb-layer.show .plate-kb-mask { opacity: 1; }
+.plate-kb-panel {
+  position: absolute; left: 0; right: 0; bottom: 0;
+  background: #f4f8f5; border-radius: 18px 18px 0 0; padding: 10px 10px calc(10px + env(safe-area-inset-bottom));
+  box-shadow: 0 -8px 30px rgba(9, 40, 25, .18);
+  transform: translateY(100%); transition: transform .26s cubic-bezier(.22, 1, .36, 1);
+  max-height: 78vh; display: flex; flex-direction: column;
+}
+.plate-kb-layer.show .plate-kb-panel { transform: translateY(0); }
+
+.plate-kb-head { display: flex; align-items: center; gap: 8px; padding: 2px 4px 8px; }
+.plate-kb-title { font-size: 14px; font-weight: 700; color: var(--text); }
+.plate-kb-sub { font-size: 12px; color: var(--brand-1); background: rgba(34,197,94,.12); padding: 2px 8px; border-radius: 999px; }
+.plate-kb-close { margin-left: auto; border: 0; background: transparent; font-size: 16px; color: var(--text-mute); cursor: pointer; padding: 4px 6px; }
+
+.plate-kb-preview { display: flex; gap: 5px; justify-content: center; padding: 6px 0 10px; }
+.kb-prev {
+  width: 30px; height: 38px; display: flex; align-items: center; justify-content: center;
+  font-size: 18px; font-weight: 700; border-radius: 7px; background: #fff;
+  border: 2px dashed #cbd5e1; color: var(--text); cursor: pointer;
+}
+.kb-prev.filled { border-style: solid; border-color: var(--border-strong); background: #f0fdf4; }
+.kb-prev.active { border-color: var(--brand-1); box-shadow: 0 0 0 2px rgba(22,163,74,.18); }
+
+.plate-kb-body { overflow-y: auto; display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; padding: 2px 0 8px; }
+.plate-kb-body.kb-province { gap: 5px; }
 .plate-key {
-  min-width: 34px; height: 40px; padding: 0 8px; border: 1px solid #d1fae5; background: #fff;
-  border-radius: 8px; font-size: 16px; font-weight: 600; color: #065f46; cursor: pointer; transition: .1s;
+  min-width: 32px; height: 38px; padding: 0 7px; border: 1px solid #d1fae5; background: #fff;
+  border-radius: 7px; font-size: 16px; font-weight: 600; color: #065f46; cursor: pointer;
+  transition: background .1s; -webkit-tap-highlight-color: transparent;
 }
 .plate-key:hover { background: #ecfdf5; }
 .plate-key:active { background: var(--brand-1); color: #fff; border-color: var(--brand-1); }
-.plate-key.wide { flex: 1; max-width: 180px; }
-.plate-key.ghost { background: #f8fafc; color: var(--text-soft); border-color: var(--border); }
-.plate-kb-acts { display: flex; gap: 8px; margin-top: 10px; }
+
+.plate-kb-foot { display: flex; gap: 8px; padding-top: 6px; border-top: 1px solid var(--border); }
+.kb-btn {
+  flex: 1; height: 44px; border-radius: 12px; border: 1px solid var(--border-strong);
+  background: #fff; color: var(--brand-1); font-size: 15px; font-weight: 600; cursor: pointer;
+}
+.kb-btn.primary { background: var(--grad); color: #fff; border: 0; }
+.kb-btn.ghost { color: var(--text-soft); border-color: var(--border); }
+.kb-btn:active { opacity: .85; }
+body.kb-open { overflow: hidden; }
 
 /* 桌面端：底部导航改为隐藏（后台页） */
 @media (min-width: 720px) {
