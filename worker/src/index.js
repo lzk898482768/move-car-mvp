@@ -1,6 +1,36 @@
+// 扫码挪车 · Worker 后端（混合通知模型 + 超级管理员 + 车主PIN找回）
+// 通知通道：车主可在创建时自带 webhook / 手机号；未配置时回退到管理后台在 D1 配置的全局通道。
+
 const JSON_HEADERS = { "Content-Type": "application/json; charset=utf-8" };
 const NOTIFY_COOLDOWN_SECONDS = 120;
 const MAX_OCR_IMAGE_BYTES = 4 * 1024 * 1024;
+const ADMIN_SESSION_DAYS = 7;
+const RECOVER_MAX_ATTEMPTS = 5;
+const RECOVER_WINDOW_SECONDS = 600;
+
+// 全局通知配置项的元数据。secret=true 的值在 D1 中以 AES-GCM 加密存储。
+const GLOBAL_SETTINGS = [
+  { key: "tencent_secret_id", secret: true, label: "腾讯云 SecretId" },
+  { key: "tencent_secret_key", secret: true, label: "腾讯云 SecretKey" },
+  { key: "tencent_sms_app_id", secret: false, label: "短信 SmsSdkAppId" },
+  { key: "tencent_sms_sign_name", secret: false, label: "短信签名" },
+  { key: "tencent_sms_template_id", secret: false, label: "短信模板 ID" },
+  { key: "tencent_sms_region", secret: false, label: "短信地域", def: "ap-guangzhou" },
+  { key: "tencent_ocr_region", secret: false, label: "OCR 地域", def: "ap-guangzhou" },
+  { key: "wechat_work_webhook", secret: true, label: "企业微信默认 Webhook" },
+  { key: "privacy_call_webhook_url", secret: true, label: "隐私号呼叫 Webhook" },
+  { key: "privacy_call_webhook_token", secret: true, label: "隐私号呼叫 Token" },
+  { key: "showdoc_webhook", secret: true, label: "ShowDoc 默认 Webhook" },
+  { key: "showdoc_token", secret: true, label: "ShowDoc Token" },
+  { key: "ocr_demo_mode", secret: false, label: "OCR 演示模式", def: "false" },
+  { key: "ocr_demo_plate", secret: false, label: "OCR 演示车牌", def: "粤B12345" },
+  { key: "default_phone_country_code", secret: false, label: "默认手机区号", def: "+86" },
+  { key: "sms_enabled_global", secret: false, label: "平台启用短信", def: "true" },
+  { key: "wechat_enabled_global", secret: false, label: "平台启用企业微信", def: "true" },
+  { key: "privacy_enabled_global", secret: false, label: "平台启用隐私号", def: "true" },
+  { key: "showdoc_enabled_global", secret: false, label: "平台启用 ShowDoc", def: "true" },
+];
+const SETTING_MAP = Object.fromEntries(GLOBAL_SETTINGS.map((s) => [s.key, s]));
 
 export default {
   async fetch(request, env) {
@@ -10,10 +40,21 @@ export default {
       const route = matchRoute(request.method, url.pathname);
       if (!route) return json({ error: "not_found", message: "接口不存在。" }, 404, env);
       const context = { request, env, url, params: route.params };
+      // 管理员接口强制鉴权（路由 guard 为 "admin" 时）
+      if (route.guard === "admin") {
+        assertConfig(env, ["DB"]);
+        context.admin = await requireAdmin(context);
+      }
       return cors(await route.handler(context), env);
     } catch (error) {
       if (error instanceof ConfigError) {
         return cors(json({ error: "config_error", message: error.message, missing: error.missing }, 503, env), env);
+      }
+      if (error instanceof AuthError) {
+        return cors(json({ error: "unauthorized", message: error.message }, 401, env), env);
+      }
+      if (error instanceof NotFoundError) {
+        return cors(json({ error: "not_found", message: error.message }, 404, env), env);
       }
       return cors(json({ error: "server_error", message: error.message || "服务异常。" }, 500, env), env);
     }
@@ -22,53 +63,98 @@ export default {
 
 function matchRoute(method, pathname) {
   const routes = [
+    // 公开 / 访客
     ["GET", /^\/api\/health$/, handleHealth],
     ["POST", /^\/api\/ocr\/plate$/, handlePlateOcr],
     ["POST", /^\/api\/vehicles$/, handleCreateVehicle],
     ["GET", /^\/api\/vehicles\/([^/]+)\/public$/, handlePublicVehicle, ["vehicleToken"]],
     ["POST", /^\/api\/vehicles\/([^/]+)\/notify$/, handleNotify, ["vehicleToken"]],
+    // 车主（ownerToken 或 车牌+PIN）
+    ["POST", /^\/api\/owner\/recover$/, handleRecoverOwner],
     ["GET", /^\/api\/owner\/([^/]+)\/vehicle$/, handleOwnerVehicle, ["ownerToken"]],
     ["PATCH", /^\/api\/owner\/([^/]+)\/vehicle$/, handlePatchOwnerVehicle, ["ownerToken"]],
     ["DELETE", /^\/api\/owner\/([^/]+)\/vehicle$/, handleDeleteOwnerVehicle, ["ownerToken"]],
     ["POST", /^\/api\/owner\/([^/]+)\/vehicle\/regenerate-token$/, handleRegenerateVehicleToken, ["ownerToken"]],
+    // 超级管理员
+    ["POST", /^\/api\/admin\/login$/, handleAdminLogin],
+    ["POST", /^\/api\/admin\/logout$/, handleAdminLogout],
+    ["GET", /^\/api\/admin\/config$/, handleAdminConfigGet, [], "admin"],
+    ["PUT", /^\/api\/admin\/config$/, handleAdminConfigPut, [], "admin"],
+    ["GET", /^\/api\/admin\/accounts$/, handleAdminListAccounts, [], "admin"],
+    ["POST", /^\/api\/admin\/accounts$/, handleAdminCreateAccount, [], "admin"],
+    ["DELETE", /^\/api\/admin\/accounts\/([^/]+)$/, handleAdminDeleteAccount, ["username"], "admin"],
+    ["GET", /^\/api\/admin\/lookup$/, handleAdminLookup, [], "admin"],
   ];
-  for (const [routeMethod, pattern, handler, keys = []] of routes) {
+  for (const [routeMethod, pattern, handler, keys = [], guard] of routes) {
     const match = pathname.match(pattern);
     if (method === routeMethod && match) {
       return {
         handler,
         params: Object.fromEntries(keys.map((key, index) => [key, decodeURIComponent(match[index + 1])])),
+        guard,
       };
     }
   }
   return null;
 }
 
-function handleHealth({ env }) {
-  const missing = requiredConfig(env).filter((item) => !item.ok).map((item) => item.name);
+/* ============================================================
+   中间件：管理员鉴权
+   ============================================================ */
+async function requireAdmin(context) {
+  const token = getAdminToken(context.request);
+  if (!token) throw new AuthError("缺少管理员身份，请先登录。");
+  const session = await context.env.DB.prepare("SELECT username, expires_at FROM admin_sessions WHERE token = ?")
+    .bind(token)
+    .first();
+  if (!session) throw new AuthError("会话无效或已过期，请重新登录。");
+  if (new Date(session.expires_at).getTime() < Date.now()) {
+    await context.env.DB.prepare("DELETE FROM admin_sessions WHERE token = ?").bind(token).run();
+    throw new AuthError("会话已过期，请重新登录。");
+  }
+  return session.username;
+}
+
+function getAdminToken(request) {
+  const auth = request.headers.get("Authorization");
+  if (auth && auth.toLowerCase().startsWith("bearer ")) return auth.slice(7).trim();
+  return request.headers.get("X-Admin-Token") || "";
+}
+
+/* ============================================================
+   健康检查
+   ============================================================ */
+async function handleHealth({ env }) {
+  const g = await loadGlobal(env);
+  const tencentOcr = Boolean(g.tencent_secret_id && g.tencent_secret_key);
+  const tencentSms =
+    Boolean(g.tencent_secret_id && g.tencent_secret_key && g.tencent_sms_app_id && g.tencent_sms_sign_name && g.tencent_sms_template_id) &&
+    g.sms_enabled_global !== "false";
+  const privacyCall = Boolean(g.privacy_call_webhook_url) && g.privacy_enabled_global !== "false";
+  const wechatWorkGlobal = Boolean(g.wechat_work_webhook) && g.wechat_enabled_global !== "false";
+  const showdocGlobal = Boolean(g.showdoc_webhook) && g.showdoc_enabled_global !== "false";
   return json({
-    status: missing.length ? "degraded" : "ok",
+    status: "ok",
     d1: Boolean(env.DB),
     encryption: Boolean(env.DATA_ENCRYPTION_KEY),
-    ocrDemo: usesOcrDemo(env),
-    tencentOcr: hasTencentOcr(env),
-    tencentSms: Boolean(
-      env.TENCENT_SECRET_ID &&
-        env.TENCENT_SECRET_KEY &&
-        env.TENCENT_SMS_APP_ID &&
-        env.TENCENT_SMS_SIGN_NAME &&
-        env.TENCENT_SMS_TEMPLATE_ID
-    ),
-    privacyCall: Boolean(env.PRIVACY_CALL_WEBHOOK_URL),
-    missing,
+    ocrDemo: usesOcrDemo(env, g),
+    tencentOcr,
+    tencentSms,
+    privacyCall,
+    wechatWorkGlobal,
+    showdocGlobal,
+    globalConfigured: Boolean(tencentSms || privacyCall || wechatWorkGlobal || showdocGlobal),
   });
 }
 
+/* ============================================================
+   工具：CORS / JSON
+   ============================================================ */
 function cors(response, env) {
   const headers = new Headers(response.headers);
   headers.set("Access-Control-Allow-Origin", env.CORS_ORIGIN || "*");
-  headers.set("Access-Control-Allow-Methods", "GET,POST,PATCH,DELETE,OPTIONS");
-  headers.set("Access-Control-Allow-Headers", "Content-Type");
+  headers.set("Access-Control-Allow-Methods", "GET,POST,PATCH,PUT,DELETE,OPTIONS");
+  headers.set("Access-Control-Allow-Headers", "Content-Type, X-Admin-Token, Authorization");
   return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
 }
 
@@ -76,27 +162,36 @@ function json(body, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: JSON_HEADERS });
 }
 
+/* ============================================================
+   OCR
+   ============================================================ */
 async function handlePlateOcr({ request, env }) {
+  const g = await loadGlobal(env);
   const form = await request.formData();
   const image = form.get("image");
   const imageError = validateOcrImage(image, env);
   if (imageError) return json(imageError, 400);
-  if (usesOcrDemo(env)) {
+  if (usesOcrDemo(env, g)) {
     return json({
-      plateNumber: env.OCR_DEMO_PLATE || "粤B12345",
-      candidates: [{ plateNumber: env.OCR_DEMO_PLATE || "粤B12345", color: "demo" }],
+      plateNumber: g.ocr_demo_plate || "粤B12345",
+      candidates: [{ plateNumber: g.ocr_demo_plate || "粤B12345", color: "demo" }],
       demo: true,
     });
   }
-  assertConfig(env, ["TENCENT_SECRET_ID", "TENCENT_SECRET_KEY"]);
+  assertConfig(env, ["DATA_ENCRYPTION_KEY"]);
+  if (!g.tencent_secret_id || !g.tencent_secret_key) {
+    return json({ error: "config_error", message: "未配置腾讯云 OCR 密钥，且未开启演示模式。" }, 503);
+  }
   const bytes = new Uint8Array(await image.arrayBuffer());
   const imageBase64 = bytesToBase64(bytes);
-  const result = await tencentApi(env, {
+  const result = await tencentApi(g, {
+    secretId: g.tencent_secret_id,
+    secretKey: g.tencent_secret_key,
     service: "ocr",
     host: "ocr.tencentcloudapi.com",
     version: "2018-11-19",
     action: "LicensePlateOCR",
-    region: env.TENCENT_OCR_REGION || "ap-guangzhou",
+    region: g.tencent_ocr_region || "ap-guangzhou",
     payload: { ImageBase64: imageBase64 },
   });
   const plateNumber = result.Number || result.PlateNumber || result.LicensePlateInfos?.[0]?.Number || "";
@@ -110,29 +205,21 @@ async function handlePlateOcr({ request, env }) {
 function isOcrDemo(env) {
   return String(env.OCR_DEMO_MODE || "").toLowerCase() === "true";
 }
-
-function hasTencentOcr(env) {
-  return Boolean(env.TENCENT_SECRET_ID && env.TENCENT_SECRET_KEY);
-}
-
-function usesOcrDemo(env) {
-  return isOcrDemo(env) && !hasTencentOcr(env);
+function usesOcrDemo(env, g) {
+  return (isOcrDemo(env) || g.ocr_demo_mode === "true") && !(g.tencent_secret_id && g.tencent_secret_key);
 }
 
 function validateOcrImage(image, env) {
-  if (!image || typeof image === "string") {
-    return { error: "missing_image", message: "请上传车牌照片。" };
-  }
+  if (!image || typeof image === "string") return { error: "missing_image", message: "请上传车牌照片。" };
   const maxBytes = Number(env.MAX_OCR_IMAGE_BYTES || MAX_OCR_IMAGE_BYTES);
-  if (image.size > maxBytes) {
-    return { error: "image_too_large", message: `图片不能超过 ${Math.floor(maxBytes / 1024 / 1024)}MB。` };
-  }
-  if (image.type && !image.type.startsWith("image/")) {
-    return { error: "invalid_image_type", message: "请上传 JPG、PNG、HEIC 等图片文件。" };
-  }
+  if (image.size > maxBytes) return { error: "image_too_large", message: `图片不能超过 ${Math.floor(maxBytes / 1024 / 1024)}MB。` };
+  if (image.type && !image.type.startsWith("image/")) return { error: "invalid_image_type", message: "请上传 JPG、PNG、HEIC 等图片文件。" };
   return null;
 }
 
+/* ============================================================
+   创建挪车码（车主）
+   ============================================================ */
 async function handleCreateVehicle({ request, env }) {
   assertConfig(env, ["DB", "DATA_ENCRYPTION_KEY"]);
   const input = await readJson(request);
@@ -146,13 +233,15 @@ async function handleCreateVehicle({ request, env }) {
   const encryptedPhone = input.ownerPhone ? await encryptText(env, normalizePhone(input.ownerPhone)) : null;
   const encryptedShowdocToken = input.showdocToken ? await encryptText(env, input.showdocToken) : null;
   const encryptedWechatWorkWebhook = input.wechatWorkWebhook ? await encryptText(env, normalizeHttpUrl(input.wechatWorkWebhook)) : null;
+  const ownerPinHash = input.ownerPin ? await sha256Hex(`pin:${input.ownerPin}`) : null;
 
   await env.DB.prepare(
     `INSERT INTO vehicles (
       vehicle_token, owner_token, plate_number_masked, plate_number_hash,
       owner_phone_encrypted, showdoc_webhook, showdoc_token_encrypted,
-      wechat_work_webhook_encrypted, sms_enabled, privacy_call_enabled, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      wechat_work_webhook_encrypted, sms_enabled, privacy_call_enabled, owner_pin_hash,
+      created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   )
     .bind(
       vehicleToken,
@@ -165,6 +254,7 @@ async function handleCreateVehicle({ request, env }) {
       encryptedWechatWorkWebhook,
       input.smsEnabled ? 1 : 0,
       input.privacyCallEnabled ? 1 : 0,
+      ownerPinHash,
       now,
       now
     )
@@ -173,32 +263,38 @@ async function handleCreateVehicle({ request, env }) {
   return json({ vehicleToken, ownerToken, maskedPlate: maskPlate(plateNumber) }, 201);
 }
 
+/* ============================================================
+   访客：公开车辆信息
+   ============================================================ */
 async function handlePublicVehicle({ env, params }) {
   assertConfig(env, ["DB"]);
+  const g = await loadGlobal(env);
   const vehicle = await getVehicleByToken(env, params.vehicleToken);
   if (!vehicle) return json({ error: "not_found", message: "车辆不存在。" }, 404);
   return json({
     maskedPlate: vehicle.plate_number_masked,
-    availableChannels: availableChannels(vehicle),
+    availableChannels: availableChannels(vehicle, g),
   });
 }
 
+/* ============================================================
+   访客：通知车主
+   ============================================================ */
 async function handleNotify({ request, env, params }) {
   assertConfig(env, ["DB", "DATA_ENCRYPTION_KEY"]);
   const input = await readJson(request);
+  const g = await loadGlobal(env);
   const vehicle = await getVehicleByToken(env, params.vehicleToken);
   if (!vehicle) return json({ error: "not_found", message: "车辆不存在。" }, 404);
-  const channel = input.channel || defaultNotifyChannel(vehicle);
-  if (!channel || !availableChannels(vehicle).includes(channel)) {
+  const channel = input.channel || defaultNotifyChannel(vehicle, g);
+  if (!channel || !availableChannels(vehicle, g).includes(channel)) {
     return json({ error: "channel_unavailable", message: "该通知方式尚未配置。" }, 400);
   }
 
   const visitorHash = await visitorIpHash(request, env);
   const cutoff = new Date(Date.now() - NOTIFY_COOLDOWN_SECONDS * 1000).toISOString();
   const recent = await env.DB.prepare(
-    `SELECT id FROM notification_logs
-     WHERE vehicle_id = ? AND visitor_ip_hash = ? AND created_at > ?
-     ORDER BY id DESC LIMIT 1`
+    `SELECT id FROM notification_logs WHERE vehicle_id = ? AND visitor_ip_hash = ? AND created_at > ? ORDER BY id DESC LIMIT 1`
   )
     .bind(vehicle.id, visitorHash, cutoff)
     .first();
@@ -208,18 +304,14 @@ async function handleNotify({ request, env, params }) {
   let status = "sent";
   let errorSummary = "";
   try {
-    if (channel === "showdoc") await sendShowDoc(vehicle, env);
-    if (channel === "wechat_work") await sendWechatWork(vehicle, env);
-    if (channel === "sms") await sendTencentSms(vehicle, env);
-    if (channel === "privacy_call") await startPrivacyCall(vehicle, env);
+    await dispatchNotify(vehicle, g, env, channel);
   } catch (error) {
     status = "failed";
     errorSummary = String(error.message || error).slice(0, 300);
   }
 
   await env.DB.prepare(
-    `INSERT INTO notification_logs (vehicle_id, channel, status, error_summary, visitor_ip_hash, created_at)
-     VALUES (?, ?, ?, ?, ?, ?)`
+    `INSERT INTO notification_logs (vehicle_id, channel, status, error_summary, visitor_ip_hash, created_at) VALUES (?, ?, ?, ?, ?, ?)`
   )
     .bind(vehicle.id, channel, status, errorSummary, visitorHash, createdAt)
     .run();
@@ -228,118 +320,32 @@ async function handleNotify({ request, env, params }) {
   return json({ message: "已通知车主，请耐心等待。", channel });
 }
 
-async function handleOwnerVehicle({ env, params }) {
-  assertConfig(env, ["DB"]);
-  const vehicle = await getVehicleByOwnerToken(env, params.ownerToken);
-  if (!vehicle) return json({ error: "not_found", message: "管理链接无效。" }, 404);
-  const logs = await env.DB.prepare(
-    `SELECT channel, status, error_summary, created_at
-     FROM notification_logs WHERE vehicle_id = ?
-     ORDER BY id DESC LIMIT 10`
-  )
-    .bind(vehicle.id)
-    .all();
-  return json({
-    vehicleToken: vehicle.vehicle_token,
-    maskedPlate: vehicle.plate_number_masked,
-    showdocEnabled: Boolean(vehicle.showdoc_webhook),
-    wechatWorkEnabled: Boolean(vehicle.wechat_work_webhook_encrypted),
-    smsEnabled: Boolean(vehicle.sms_enabled),
-    privacyCallEnabled: Boolean(vehicle.privacy_call_enabled),
-    recentNotifications: logs.results || [],
-  });
-}
-
-async function handlePatchOwnerVehicle({ request, env, params }) {
-  assertConfig(env, ["DB", "DATA_ENCRYPTION_KEY"]);
-  const vehicle = await getVehicleByOwnerToken(env, params.ownerToken);
-  if (!vehicle) return json({ error: "not_found", message: "管理链接无效。" }, 404);
-  const input = await readJson(request);
-  const validationError = validateVehicleInput(input, { partial: true, hasStoredPhone: Boolean(vehicle.owner_phone_encrypted) });
-  if (validationError) return json(validationError, 400);
-  const updates = [];
-  const values = [];
-  if (input.showdocWebhook) {
-    updates.push("showdoc_webhook = ?");
-    values.push(normalizeHttpUrl(input.showdocWebhook));
+async function dispatchNotify(vehicle, g, env, channel) {
+  if (channel === "showdoc") {
+    const webhook = vehicle.showdoc_webhook || g.showdoc_webhook;
+    if (!webhook) throw new Error("ShowDoc 未配置");
+    const token = vehicle.showdoc_token_encrypted ? await decryptText(env, vehicle.showdoc_token_encrypted) : g.showdoc_token;
+    await sendShowDoc(webhook, token, vehicle);
+  } else if (channel === "wechat_work") {
+    const webhook = vehicle.wechat_work_webhook_encrypted ? await decryptText(env, vehicle.wechat_work_webhook_encrypted) : g.wechat_work_webhook;
+    if (!webhook) throw new Error("企业微信未配置");
+    await sendWechatWork(webhook, vehicle);
+  } else if (channel === "sms") {
+    await sendTencentSms(vehicle, env, g);
+  } else if (channel === "privacy_call") {
+    await startPrivacyCall(vehicle, env, g);
+  } else {
+    throw new Error("未知通知渠道");
   }
-  if (input.showdocToken) {
-    updates.push("showdoc_token_encrypted = ?");
-    values.push(await encryptText(env, input.showdocToken));
-  }
-  if (input.wechatWorkWebhook) {
-    updates.push("wechat_work_webhook_encrypted = ?");
-    values.push(await encryptText(env, normalizeHttpUrl(input.wechatWorkWebhook)));
-  }
-  if (input.ownerPhone) {
-    updates.push("owner_phone_encrypted = ?");
-    values.push(await encryptText(env, normalizePhone(input.ownerPhone)));
-  }
-  if (typeof input.smsEnabled === "boolean") {
-    updates.push("sms_enabled = ?");
-    values.push(input.smsEnabled ? 1 : 0);
-  }
-  if (typeof input.privacyCallEnabled === "boolean") {
-    updates.push("privacy_call_enabled = ?");
-    values.push(input.privacyCallEnabled ? 1 : 0);
-  }
-  if (!updates.length) return json({ message: "没有需要更新的字段。" });
-  updates.push("updated_at = ?");
-  values.push(nowIso(), vehicle.id);
-  await env.DB.prepare(`UPDATE vehicles SET ${updates.join(", ")} WHERE id = ?`).bind(...values).run();
-  return json({ message: "配置已更新。" });
 }
 
-async function handleRegenerateVehicleToken({ env, params }) {
-  assertConfig(env, ["DB"]);
-  const vehicle = await getVehicleByOwnerToken(env, params.ownerToken);
-  if (!vehicle) return json({ error: "not_found", message: "管理链接无效。" }, 404);
-  const vehicleToken = await token("veh");
-  await env.DB.prepare("UPDATE vehicles SET vehicle_token = ?, updated_at = ? WHERE id = ?")
-    .bind(vehicleToken, nowIso(), vehicle.id)
-    .run();
-  return json({ vehicleToken, maskedPlate: vehicle.plate_number_masked });
-}
-
-async function handleDeleteOwnerVehicle({ env, params }) {
-  assertConfig(env, ["DB"]);
-  const vehicle = await getVehicleByOwnerToken(env, params.ownerToken);
-  if (!vehicle) return json({ error: "not_found", message: "管理链接无效。" }, 404);
-  await env.DB.prepare("DELETE FROM notification_logs WHERE vehicle_id = ?").bind(vehicle.id).run();
-  await env.DB.prepare("DELETE FROM vehicles WHERE id = ?").bind(vehicle.id).run();
-  return json({ message: "绑定已删除。" });
-}
-
-async function getVehicleByToken(env, vehicleToken) {
-  return env.DB.prepare("SELECT * FROM vehicles WHERE vehicle_token = ?").bind(vehicleToken).first();
-}
-
-async function getVehicleByOwnerToken(env, ownerToken) {
-  return env.DB.prepare("SELECT * FROM vehicles WHERE owner_token = ?").bind(ownerToken).first();
-}
-
-function availableChannels(vehicle) {
-  const channels = [];
-  if (vehicle.showdoc_webhook) channels.push("showdoc");
-  if (vehicle.wechat_work_webhook_encrypted) channels.push("wechat_work");
-  if (vehicle.sms_enabled && vehicle.owner_phone_encrypted) channels.push("sms");
-  if (vehicle.privacy_call_enabled && vehicle.owner_phone_encrypted) channels.push("privacy_call");
-  return channels;
-}
-
-function defaultNotifyChannel(vehicle) {
-  const channels = availableChannels(vehicle);
-  return ["wechat_work", "showdoc", "sms", "privacy_call"].find((channel) => channels.includes(channel)) || "";
-}
-
-async function sendShowDoc(vehicle, env) {
-  const token = vehicle.showdoc_token_encrypted ? await decryptText(env, vehicle.showdoc_token_encrypted) : "";
+async function sendShowDoc(webhook, token, vehicle) {
   const body = new URLSearchParams({
     title: "扫码挪车提醒",
     content: `车辆 ${vehicle.plate_number_masked} 收到挪车提醒，请及时处理。`,
   });
   if (token) body.set("token", token);
-  const res = await fetch(vehicle.showdoc_webhook, {
+  const res = await fetch(webhook, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded; charset=utf-8" },
     body,
@@ -351,67 +357,57 @@ async function sendShowDoc(vehicle, env) {
   }
 }
 
-async function sendWechatWork(vehicle, env) {
-  const webhook = await decryptText(env, vehicle.wechat_work_webhook_encrypted);
+async function sendWechatWork(webhook, vehicle) {
   const body = {
     msgtype: "text",
-    text: {
-      content: `扫码挪车提醒：车辆 ${vehicle.plate_number_masked} 收到挪车提醒，请及时处理。`,
-    },
+    text: { content: `扫码挪车提醒：车辆 ${vehicle.plate_number_masked} 收到挪车提醒，请及时处理。` },
   };
-  const res = await fetch(webhook, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
+  const res = await fetch(webhook, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
   if (!res.ok) throw new Error(`企业微信通知失败：${res.status}`);
   const data = await res.json().catch(() => ({}));
-  if (data.errcode && data.errcode !== 0) {
-    throw new Error(`企业微信通知失败：${data.errmsg || data.errcode}`);
-  }
+  if (data.errcode && data.errcode !== 0) throw new Error(`企业微信通知失败：${data.errmsg || data.errcode}`);
 }
 
-async function sendTencentSms(vehicle, env) {
-  assertEnv(env, ["TENCENT_SECRET_ID", "TENCENT_SECRET_KEY", "TENCENT_SMS_APP_ID", "TENCENT_SMS_SIGN_NAME", "TENCENT_SMS_TEMPLATE_ID"]);
+async function sendTencentSms(vehicle, env, g) {
+  if (!g.tencent_secret_id || !g.tencent_secret_key || !g.tencent_sms_app_id || !g.tencent_sms_sign_name || !g.tencent_sms_template_id) {
+    throw new Error("短信通道未配置（缺少腾讯云短信密钥）");
+  }
   const phone = await decryptText(env, vehicle.owner_phone_encrypted);
-  const result = await tencentApi(env, {
+  const result = await tencentApi(g, {
+    secretId: g.tencent_secret_id,
+    secretKey: g.tencent_secret_key,
     service: "sms",
-    host: env.TENCENT_SMS_HOST || "sms.tencentcloudapi.com",
+    host: "sms.tencentcloudapi.com",
     version: "2021-01-11",
     action: "SendSms",
-    region: env.TENCENT_SMS_REGION || "ap-guangzhou",
+    region: g.tencent_sms_region || "ap-guangzhou",
     payload: {
-      SmsSdkAppId: env.TENCENT_SMS_APP_ID,
-      SignName: env.TENCENT_SMS_SIGN_NAME,
-      TemplateId: env.TENCENT_SMS_TEMPLATE_ID,
+      SmsSdkAppId: g.tencent_sms_app_id,
+      SignName: g.tencent_sms_sign_name,
+      TemplateId: g.tencent_sms_template_id,
       TemplateParamSet: [vehicle.plate_number_masked],
-      PhoneNumberSet: [toE164(phone, env.DEFAULT_PHONE_COUNTRY_CODE || "+86")],
+      PhoneNumberSet: [toE164(phone, g.default_phone_country_code || "+86")],
     },
   });
   const status = result.SendStatusSet?.[0];
   if (status && status.Code !== "Ok") throw new Error(status.Message || status.Code);
 }
 
-async function startPrivacyCall(vehicle, env) {
-  assertEnv(env, ["PRIVACY_CALL_WEBHOOK_URL"]);
+async function startPrivacyCall(vehicle, env, g) {
+  if (!g.privacy_call_webhook_url) throw new Error("隐私号呼叫未配置");
   const phone = await decryptText(env, vehicle.owner_phone_encrypted);
-  const res = await fetch(env.PRIVACY_CALL_WEBHOOK_URL, {
+  const res = await fetch(g.privacy_call_webhook_url, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: env.PRIVACY_CALL_WEBHOOK_TOKEN ? `Bearer ${env.PRIVACY_CALL_WEBHOOK_TOKEN}` : "",
+      Authorization: g.privacy_call_webhook_token ? `Bearer ${g.privacy_call_webhook_token}` : "",
     },
-    body: JSON.stringify({
-      phone,
-      maskedPlate: vehicle.plate_number_masked,
-      vendor: "tencent",
-      purpose: "move_car_privacy_call",
-    }),
+    body: JSON.stringify({ phone, maskedPlate: vehicle.plate_number_masked, vendor: "tencent", purpose: "move_car_privacy_call" }),
   });
   if (!res.ok) throw new Error(`隐私号呼叫失败：${res.status}`);
 }
 
-async function tencentApi(env, { service, host, version, action, region, payload }) {
+async function tencentApi(g, { secretId, secretKey, service, host, version, action, region, payload }) {
   const timestamp = Math.floor(Date.now() / 1000);
   const date = new Date(timestamp * 1000).toISOString().slice(0, 10);
   const body = JSON.stringify(payload);
@@ -420,12 +416,11 @@ async function tencentApi(env, { service, host, version, action, region, payload
   const credentialScope = `${date}/${service}/tc3_request`;
   const hashedCanonicalRequest = await sha256Hex(canonicalRequest);
   const stringToSign = ["TC3-HMAC-SHA256", timestamp, credentialScope, hashedCanonicalRequest].join("\n");
-  const secretDate = await hmac(`TC3${env.TENCENT_SECRET_KEY}`, date);
+  const secretDate = await hmac(`TC3${secretKey}`, date);
   const secretService = await hmac(secretDate, service);
   const secretSigning = await hmac(secretService, "tc3_request");
   const signature = bytesToHex(await hmac(secretSigning, stringToSign));
-  const authorization = `TC3-HMAC-SHA256 Credential=${env.TENCENT_SECRET_ID}/${credentialScope}, SignedHeaders=host, Signature=${signature}`;
-
+  const authorization = `TC3-HMAC-SHA256 Credential=${secretId}/${credentialScope}, SignedHeaders=host, Signature=${signature}`;
   const res = await fetch(`https://${host}`, {
     method: "POST",
     headers: {
@@ -440,129 +435,419 @@ async function tencentApi(env, { service, host, version, action, region, payload
     body,
   });
   const data = await res.json();
-  if (!res.ok || data.Response?.Error) {
-    throw new Error(data.Response?.Error?.Message || `腾讯云 ${action} 调用失败：${res.status}`);
-  }
+  if (!res.ok || data.Response?.Error) throw new Error(data.Response?.Error?.Message || `腾讯云 ${action} 调用失败：${res.status}`);
   return data.Response;
 }
 
-async function readJson(request) {
+/* ============================================================
+   车主：管理后台数据 / 修改 / 删除 / 重生成
+   ============================================================ */
+async function handleOwnerVehicle({ env, params }) {
+  assertConfig(env, ["DB"]);
+  const g = await loadGlobal(env);
+  const vehicle = await getVehicleByOwnerToken(env, params.ownerToken);
+  if (!vehicle) return json({ error: "not_found", message: "管理链接无效。" }, 404);
+  const logs = await env.DB.prepare(
+    `SELECT channel, status, error_summary, created_at FROM notification_logs WHERE vehicle_id = ? ORDER BY id DESC LIMIT 10`
+  )
+    .bind(vehicle.id)
+    .all();
+  // 回填当前配置（车主本人可见自己的配置），修复「改了不生效 / 打开时开关被重置」的问题
+  let wechatWorkWebhook = "";
+  let ownerPhoneMasked = "";
   try {
-    return await request.json();
-  } catch {
-    return {};
+    if (vehicle.wechat_work_webhook_encrypted) wechatWorkWebhook = await decryptText(env, vehicle.wechat_work_webhook_encrypted);
+  } catch {}
+  try {
+    if (vehicle.owner_phone_encrypted) ownerPhoneMasked = maskPhone(await decryptText(env, vehicle.owner_phone_encrypted));
+  } catch {}
+  return json({
+    vehicleToken: vehicle.vehicle_token,
+    maskedPlate: vehicle.plate_number_masked,
+    showdocEnabled: Boolean(vehicle.showdoc_webhook),
+    wechatWorkEnabled: Boolean(vehicle.wechat_work_webhook_encrypted),
+    smsEnabled: Boolean(vehicle.sms_enabled),
+    privacyCallEnabled: Boolean(vehicle.privacy_call_enabled),
+    hasPin: Boolean(vehicle.owner_pin_hash),
+    // 回填用
+    wechatWorkWebhook,
+    showdocWebhook: vehicle.showdoc_webhook || "",
+    hasShowdocToken: Boolean(vehicle.showdoc_token_encrypted),
+    ownerPhoneMasked,
+    hasPhone: Boolean(vehicle.owner_phone_encrypted),
+    global: {
+      sms: Boolean(g.sms_enabled_global !== "false" && g.tencent_secret_id && g.tencent_secret_key && g.tencent_sms_app_id && g.tencent_sms_sign_name && g.tencent_sms_template_id),
+      wechat: Boolean(g.wechat_enabled_global !== "false" && g.wechat_work_webhook),
+      privacy: Boolean(g.privacy_enabled_global !== "false" && g.privacy_call_webhook_url),
+      showdoc: Boolean(g.showdoc_enabled_global !== "false" && g.showdoc_webhook),
+    },
+    recentNotifications: logs.results || [],
+  });
+}
+
+async function handlePatchOwnerVehicle({ request, env, params }) {
+  assertConfig(env, ["DB", "DATA_ENCRYPTION_KEY"]);
+  const vehicle = await getVehicleByOwnerToken(env, params.ownerToken);
+  if (!vehicle) return json({ error: "not_found", message: "管理链接无效。" }, 404);
+  const input = await readJson(request);
+  const validationError = validateVehicleInput(input, { partial: true, hasStoredPhone: Boolean(vehicle.owner_phone_encrypted) });
+  if (validationError) return json(validationError, 400);
+  const updates = [];
+  const values = [];
+  // 显式传 null / 空字符串表示清除；传值表示设置。支持把 webhook 清空。
+  if ("showdocWebhook" in input) {
+    if (input.showdocWebhook) { updates.push("showdoc_webhook = ?"); values.push(normalizeHttpUrl(input.showdocWebhook)); }
+    else { updates.push("showdoc_webhook = ?"); values.push(""); }
   }
+  if ("showdocToken" in input) {
+    if (input.showdocToken) { updates.push("showdoc_token_encrypted = ?"); values.push(await encryptText(env, input.showdocToken)); }
+    else { updates.push("showdoc_token_encrypted = ?"); values.push(null); }
+  }
+  if ("wechatWorkWebhook" in input) {
+    if (input.wechatWorkWebhook) { updates.push("wechat_work_webhook_encrypted = ?"); values.push(await encryptText(env, normalizeHttpUrl(input.wechatWorkWebhook))); }
+    else { updates.push("wechat_work_webhook_encrypted = ?"); values.push(null); }
+  }
+  if ("ownerPhone" in input) {
+    if (input.ownerPhone) { updates.push("owner_phone_encrypted = ?"); values.push(await encryptText(env, normalizePhone(input.ownerPhone))); }
+    else { updates.push("owner_phone_encrypted = ?"); values.push(null); }
+  }
+  if (typeof input.smsEnabled === "boolean") { updates.push("sms_enabled = ?"); values.push(input.smsEnabled ? 1 : 0); }
+  if (typeof input.privacyCallEnabled === "boolean") { updates.push("privacy_call_enabled = ?"); values.push(input.privacyCallEnabled ? 1 : 0); }
+  if ("ownerPin" in input && input.ownerPin) { updates.push("owner_pin_hash = ?"); values.push(await sha256Hex(`pin:${input.ownerPin}`)); }
+  if (!updates.length) return json({ message: "没有需要更新的字段。" });
+  updates.push("updated_at = ?");
+  values.push(nowIso(), vehicle.id);
+  await env.DB.prepare(`UPDATE vehicles SET ${updates.join(", ")} WHERE id = ?`).bind(...values).run();
+  return json({ message: "配置已更新。" });
 }
 
-function assertEnv(env, keys) {
-  const missing = keys.filter((key) => !env[key]);
-  if (missing.length) throw new Error(`缺少环境变量：${missing.join(", ")}`);
+async function handleRegenerateVehicleToken({ env, params }) {
+  assertConfig(env, ["DB"]);
+  const vehicle = await getVehicleByOwnerToken(env, params.ownerToken);
+  if (!vehicle) return json({ error: "not_found", message: "管理链接无效。" }, 404);
+  const vehicleToken = await token("veh");
+  await env.DB.prepare("UPDATE vehicles SET vehicle_token = ?, updated_at = ? WHERE id = ?").bind(vehicleToken, nowIso(), vehicle.id).run();
+  return json({ vehicleToken, maskedPlate: vehicle.plate_number_masked });
 }
 
-function requiredConfig(env) {
-  return [
-    { name: "DB", ok: Boolean(env.DB) },
-    { name: "DATA_ENCRYPTION_KEY", ok: Boolean(env.DATA_ENCRYPTION_KEY) },
-    { name: "TENCENT_SECRET_ID", ok: usesOcrDemo(env) || Boolean(env.TENCENT_SECRET_ID) },
-    { name: "TENCENT_SECRET_KEY", ok: usesOcrDemo(env) || Boolean(env.TENCENT_SECRET_KEY) },
-  ];
+async function handleDeleteOwnerVehicle({ env, params }) {
+  assertConfig(env, ["DB"]);
+  const vehicle = await getVehicleByOwnerToken(env, params.ownerToken);
+  if (!vehicle) return json({ error: "not_found", message: "管理链接无效。" }, 404);
+  await env.DB.prepare("DELETE FROM notification_logs WHERE vehicle_id = ?").bind(vehicle.id).run();
+  await env.DB.prepare("DELETE FROM vehicles WHERE id = ?").bind(vehicle.id).run();
+  return json({ message: "绑定已删除。" });
+}
+
+/* ============================================================
+   车主：车牌 + 管理密码 找回 ownerToken
+   ============================================================ */
+async function handleRecoverOwner({ request, env }) {
+  assertConfig(env, ["DB", "DATA_ENCRYPTION_KEY"]);
+  const input = await readJson(request);
+  const plate = normalizePlate(input.plateNumber);
+  if (!/^[\u4e00-\u9fa5A-Z0-9]{5,10}$/.test(plate)) return json({ error: "invalid_plate", message: "请填写有效车牌号。" }, 400);
+  if (!input.ownerPin) return json({ error: "missing_pin", message: "请填写管理密码。" }, 400);
+
+  const ipHash = await visitorIpHash(request, env);
+  const plateHash = await sha256Hex(plate);
+  const rlKey = `recover:${ipHash}:${plateHash}`;
+  if (!(await checkRateLimit(env, rlKey, RECOVER_MAX_ATTEMPTS, RECOVER_WINDOW_SECONDS))) {
+    return json({ error: "rate_limited", message: "尝试次数过多，请稍后再试。" }, 429);
+  }
+  const pinHash = await sha256Hex(`pin:${input.ownerPin}`);
+  const vehicle = await env.DB.prepare("SELECT * FROM vehicles WHERE plate_number_hash = ? AND owner_pin_hash = ?")
+    .bind(plateHash, pinHash)
+    .first();
+  if (!vehicle) return json({ error: "not_found", message: "未找到匹配的车辆，请确认车牌与管理密码。" }, 404);
+  return json({ ownerToken: vehicle.owner_token, maskedPlate: vehicle.plate_number_masked });
+}
+
+/* ============================================================
+   超级管理员：登录 / 登出 / 账号管理
+   ============================================================ */
+async function handleAdminLogin({ request, env }) {
+  assertConfig(env, ["DB"]);
+  const input = await readJson(request);
+  const username = String(input.username || "").trim();
+  const password = String(input.password || "");
+  if (!username || !password) return json({ error: "invalid_input", message: "请填写账号与密码。" }, 400);
+
+  let admin = await env.DB.prepare("SELECT * FROM admins WHERE username = ?").bind(username).first();
+  // 首次引导：当没有任何管理员且配置了 ADMIN_BOOTSTRAP 时，用引导账号初始化
+  if (!admin) {
+    const bootstrap = env.ADMIN_BOOTSTRAP || "";
+    if (bootstrap && (await env.DB.prepare("SELECT COUNT(*) AS c FROM admins").first()).c === 0) {
+      const [bUser, bPass] = bootstrap.split(":");
+      if (username === bUser && password === bPass) {
+        admin = await createAdmin(env, username, password, "super");
+      }
+    }
+    if (!admin) return json({ error: "unauthorized", message: "账号或密码错误。" }, 401);
+  }
+  if (!(await verifyPassword(password, admin.salt, admin.password_hash))) {
+    return json({ error: "unauthorized", message: "账号或密码错误。" }, 401);
+  }
+  const tokenStr = await token("adm");
+  const expires = new Date(Date.now() + ADMIN_SESSION_DAYS * 86400000).toISOString();
+  await env.DB.prepare("INSERT INTO admin_sessions (token, username, expires_at) VALUES (?, ?, ?)").bind(tokenStr, username, expires).run();
+  return json({ token: tokenStr, username, role: admin.role, expiresAt: expires });
+}
+
+async function handleAdminLogout({ request, env }) {
+  const tokenStr = getAdminToken(request);
+  if (tokenStr) await env.DB.prepare("DELETE FROM admin_sessions WHERE token = ?").bind(tokenStr).run();
+  return json({ message: "已退出登录。" });
+}
+
+async function handleAdminListAccounts({ env }) {
+  const rows = await env.DB.prepare("SELECT username, role, created_at FROM admins ORDER BY created_at ASC").all();
+  return json({ accounts: rows.results || [] });
+}
+
+async function handleAdminCreateAccount({ request, env, params, url }) {
+  const input = await readJson(request);
+  const username = String(input.username || "").trim();
+  const password = String(input.password || "");
+  if (!/^[A-Za-z0-9_]{3,32}$/.test(username)) return json({ error: "invalid_username", message: "账号为 3-32 位字母数字或下划线。" }, 400);
+  if (password.length < 8) return json({ error: "weak_password", message: "密码至少 8 位。" }, 400);
+  const exists = await env.DB.prepare("SELECT username FROM admins WHERE username = ?").bind(username).first();
+  if (exists) return json({ error: "exists", message: "该账号已存在。" }, 400);
+  await createAdmin(env, username, password, input.role === "super" ? "super" : "admin");
+  return json({ message: "账号已创建。" }, 201);
+}
+
+async function handleAdminDeleteAccount({ env, params }) {
+  const rows = await env.DB.prepare("SELECT COUNT(*) AS c FROM admins").first();
+  if (rows.c <= 1) return json({ error: "last_admin", message: "至少保留一个管理员账号。" }, 400);
+  const res = await env.DB.prepare("DELETE FROM admins WHERE username = ?").bind(params.username).run();
+  if (res.changes === 0) return json({ error: "not_found", message: "账号不存在。" }, 404);
+  await env.DB.prepare("DELETE FROM admin_sessions WHERE username = ?").bind(params.username).run();
+  return json({ message: "账号已删除。" });
+}
+
+async function createAdmin(env, username, password, role) {
+  const salt = bytesToBase64Url(crypto.getRandomValues(new Uint8Array(16)));
+  const hash = await sha256Hex(`${salt}:${password}`);
+  await env.DB.prepare("INSERT INTO admins (username, password_hash, salt, role, created_at) VALUES (?, ?, ?, ?, ?)")
+    .bind(username, hash, salt, role, nowIso())
+    .run();
+  return { username, salt, password_hash: hash, role };
+}
+
+async function verifyPassword(password, salt, expectedHash) {
+  const hash = await sha256Hex(`${salt}:${password}`);
+  return hash === expectedHash;
+}
+
+/* ============================================================
+   超级管理员：全局通知配置
+   ============================================================ */
+async function handleAdminConfigGet({ env }) {
+  const g = await loadGlobal(env);
+  const settings = GLOBAL_SETTINGS.map((s) => ({
+    key: s.key,
+    label: s.label,
+    secret: s.secret,
+    value: s.secret ? (g[s.key] ? "••••••" : "") : (g[s.key] ?? s.def ?? ""),
+  }));
+  return json({ settings });
+}
+
+async function handleAdminConfigPut({ request, env }) {
+  assertConfig(env, ["DATA_ENCRYPTION_KEY"]);
+  const input = await readJson(request);
+  const updated = [];
+  for (const [key, value] of Object.entries(input)) {
+    const meta = SETTING_MAP[key];
+    if (!meta) continue;
+    const str = value === null || value === undefined ? "" : String(value);
+    const stored = meta.secret ? await encryptText(env, str) : str;
+    await env.DB.prepare(
+      `INSERT INTO global_config (key, value, is_secret, updated_at) VALUES (?, ?, ?, ?)
+       ON CONFLICT(key) DO UPDATE SET value=excluded.value, is_secret=excluded.is_secret, updated_at=excluded.updated_at`
+    )
+      .bind(key, stored, meta.secret ? 1 : 0, nowIso())
+      .run();
+    updated.push(key);
+  }
+  return json({ message: "全局配置已保存。", updated });
+}
+
+/* ============================================================
+   超级管理员：按车牌查车主手机号
+   ============================================================ */
+async function handleAdminLookup({ env, url }) {
+  assertConfig(env, ["DB", "DATA_ENCRYPTION_KEY"]);
+  const plate = normalizePlate(url.searchParams.get("plate"));
+  if (!plate) return json({ error: "missing_plate", message: "请提供车牌号。" }, 400);
+  const plateHash = await sha256Hex(plate);
+  const vehicle = await env.DB.prepare("SELECT * FROM vehicles WHERE plate_number_hash = ?").bind(plateHash).first();
+  if (!vehicle) return json({ found: false, message: "未找到该车牌绑定的挪车码。" });
+  const g = await loadGlobal(env);
+  let phone = null;
+  try { phone = vehicle.owner_phone_encrypted ? await decryptText(env, vehicle.owner_phone_encrypted) : null; } catch {}
+  const logs = await env.DB.prepare(
+    `SELECT channel, status, created_at FROM notification_logs WHERE vehicle_id = ? ORDER BY id DESC LIMIT 5`
+  ).bind(vehicle.id).all();
+  return json({
+    found: true,
+    maskedPlate: vehicle.plate_number_masked,
+    phone,
+    channels: availableChannels(vehicle, g),
+    smsEnabled: Boolean(vehicle.sms_enabled),
+    privacyCallEnabled: Boolean(vehicle.privacy_call_enabled),
+    createdAt: vehicle.created_at,
+    recentNotifications: logs.results || [],
+  });
+}
+
+/* ============================================================
+   数据读取 / 通道解析
+   ============================================================ */
+async function getVehicleByToken(env, vehicleToken) {
+  return env.DB.prepare("SELECT * FROM vehicles WHERE vehicle_token = ?").bind(vehicleToken).first();
+}
+async function getVehicleByOwnerToken(env, ownerToken) {
+  return env.DB.prepare("SELECT * FROM vehicles WHERE owner_token = ?").bind(ownerToken).first();
+}
+
+async function loadGlobal(env) {
+  const rows = await env.DB.prepare("SELECT key, value, is_secret FROM global_config").all();
+  const map = {};
+  for (const s of GLOBAL_SETTINGS) if (s.def !== undefined) map[s.key] = s.def;
+  for (const r of rows.results || []) {
+    map[r.key] = r.is_secret ? await decryptText(env, r.value) : r.value;
+  }
+  return map;
+}
+
+function availableChannels(vehicle, g) {
+  const channels = [];
+  if ((vehicle.wechat_work_webhook_encrypted || (g.wechat_work_webhook && g.wechat_enabled_global !== "false"))) channels.push("wechat_work");
+  if ((vehicle.showdoc_webhook || (g.showdoc_webhook && g.showdoc_enabled_global !== "false"))) channels.push("showdoc");
+  if (
+    g.sms_enabled_global !== "false" &&
+    g.tencent_secret_id && g.tencent_secret_key && g.tencent_sms_app_id && g.tencent_sms_sign_name && g.tencent_sms_template_id &&
+    vehicle.sms_enabled && vehicle.owner_phone_encrypted
+  ) channels.push("sms");
+  if (
+    g.privacy_enabled_global !== "false" && g.privacy_call_webhook_url &&
+    vehicle.privacy_call_enabled && vehicle.owner_phone_encrypted
+  ) channels.push("privacy_call");
+  return channels;
+}
+
+function defaultNotifyChannel(vehicle, g) {
+  const channels = availableChannels(vehicle, g);
+  return ["wechat_work", "showdoc", "sms", "privacy_call"].find((c) => channels.includes(c)) || "";
+}
+
+/* ============================================================
+   限流计数
+   ============================================================ */
+async function checkRateLimit(env, key, max, windowSeconds) {
+  const now = Date.now();
+  const row = await env.DB.prepare("SELECT count, expires_at FROM rate_logs WHERE key = ?").bind(key).first();
+  if (row && new Date(row.expires_at).getTime() > now) {
+    if (row.count >= max) return false;
+    await env.DB.prepare("UPDATE rate_logs SET count = count + 1 WHERE key = ?").bind(key).run();
+    return true;
+  }
+  const expires = new Date(now + windowSeconds * 1000).toISOString();
+  await env.DB.prepare(
+    `INSERT INTO rate_logs (key, count, expires_at) VALUES (?, 1, ?)
+     ON CONFLICT(key) DO UPDATE SET count = 1, expires_at = excluded.expires_at`
+  ).bind(key, expires).run();
+  return true;
+}
+
+/* ============================================================
+   输入校验 / 工具
+   ============================================================ */
+async function readJson(request) {
+  try { return await request.json(); } catch { return {}; }
 }
 
 function assertConfig(env, keys) {
   const missing = keys.filter((key) => !env[key]);
-  if (missing.length) {
-    throw new ConfigError(`后端配置不完整：${missing.join(", ")}`, missing);
-  }
+  if (missing.length) throw new ConfigError(`后端配置不完整：${missing.join(", ")}`, missing);
 }
 
 class ConfigError extends Error {
-  constructor(message, missing) {
-    super(message);
-    this.name = "ConfigError";
-    this.missing = missing;
-  }
+  constructor(message, missing) { super(message); this.name = "ConfigError"; this.missing = missing; }
+}
+class AuthError extends Error {
+  constructor(message) { super(message); this.name = "AuthError"; }
+}
+class NotFoundError extends Error {
+  constructor(message) { super(message); this.name = "NotFoundError"; }
 }
 
 async function token(prefix) {
   const bytes = crypto.getRandomValues(new Uint8Array(18));
   return `${prefix}_${bytesToBase64Url(bytes)}`;
 }
-
-function nowIso() {
-  return new Date().toISOString();
-}
-
-function normalizePlate(value) {
-  return String(value || "").trim().replace(/\s+/g, "").toUpperCase();
-}
-
-function normalizeHttpUrl(value) {
-  return new URL(String(value || "").trim()).toString();
-}
-
-function normalizePhone(value) {
-  return String(value || "").trim().replace(/[\s-]/g, "");
-}
+function nowIso() { return new Date().toISOString(); }
+function normalizePlate(value) { return String(value || "").trim().replace(/\s+/g, "").toUpperCase(); }
+function normalizeHttpUrl(value) { return new URL(String(value || "").trim()).toString(); }
+function normalizePhone(value) { return String(value || "").trim().replace(/[\s-]/g, ""); }
 
 function validateVehicleInput(input, { requireNotification = false, partial = false, hasStoredPhone = false } = {}) {
-  const plate = normalizePlate(input.plateNumber);
-  if (!partial && !/^[\u4e00-\u9fa5A-Z0-9]{5,10}$/.test(plate)) {
-    return { error: "invalid_plate", message: "请填写有效车牌号。" };
+  if (partial) {
+    const requiresPhone = Boolean(input.smsEnabled || input.privacyCallEnabled);
+    if ((requiresPhone && !hasStoredPhone) || (input.ownerPhone && String(input.ownerPhone).length)) {
+      if (!isPhone(input.ownerPhone)) return { error: "invalid_phone", message: "请填写有效手机号，或关闭短信/隐私号通知。" };
+    }
+    if (input.showdocWebhook) { if (!isHttpUrl(input.showdocWebhook)) return { error: "invalid_showdoc_webhook", message: "ShowDoc Webhook 必须是 http 或 https 地址。" }; }
+    if (input.wechatWorkWebhook && !isHttpUrl(input.wechatWorkWebhook)) return { error: "invalid_wechat_work_webhook", message: "企业微信机器人 Webhook 必须是 http 或 https 地址。" };
+    return null;
   }
+  const plate = normalizePlate(input.plateNumber);
+  if (!/^[\u4e00-\u9fa5A-Z0-9]{5,10}$/.test(plate)) return { error: "invalid_plate", message: "请填写有效车牌号。" };
   if (requireNotification && !input.showdocWebhook && !input.wechatWorkWebhook && !input.smsEnabled && !input.privacyCallEnabled) {
     return { error: "missing_notification_channel", message: "请至少配置 ShowDoc、微信、短信或隐私号中的一种通知方式。" };
   }
-  if (input.showdocWebhook) {
-    if (!isHttpUrl(input.showdocWebhook)) {
-      return { error: "invalid_showdoc_webhook", message: "ShowDoc Webhook 必须是 http 或 https 地址。" };
-    }
-  }
-  if (input.wechatWorkWebhook && !isHttpUrl(input.wechatWorkWebhook)) {
-    return { error: "invalid_wechat_work_webhook", message: "企业微信机器人 Webhook 必须是 http 或 https 地址。" };
-  }
+  if (input.showdocWebhook && !isHttpUrl(input.showdocWebhook)) return { error: "invalid_showdoc_webhook", message: "ShowDoc Webhook 必须是 http 或 https 地址。" };
+  if (input.wechatWorkWebhook && !isHttpUrl(input.wechatWorkWebhook)) return { error: "invalid_wechat_work_webhook", message: "企业微信机器人 Webhook 必须是 http 或 https 地址。" };
   const requiresPhone = Boolean(input.smsEnabled || input.privacyCallEnabled);
   if ((requiresPhone && !hasStoredPhone) || input.ownerPhone) {
-    if (!isPhone(input.ownerPhone)) {
-      return { error: "invalid_phone", message: "请填写有效手机号，或关闭短信/隐私号通知。" };
-    }
+    if (!isPhone(input.ownerPhone)) return { error: "invalid_phone", message: "请填写有效手机号，或关闭短信/隐私号通知。" };
   }
   return null;
 }
 
 function isHttpUrl(value) {
-  try {
-    const url = new URL(String(value || "").trim());
-    return ["http:", "https:"].includes(url.protocol);
-  } catch {
-    return false;
-  }
+  try { const url = new URL(String(value || "").trim()); return ["http:", "https:"].includes(url.protocol); } catch { return false; }
 }
-
-function isPhone(value) {
-  return /^\+?\d[\d\s-]{6,19}$/.test(String(value || "").trim());
-}
-
+function isPhone(value) { return /^\+?\d[\d\s-]{6,19}$/.test(String(value || "").trim()); }
 function maskPlate(value) {
   const plate = normalizePlate(value);
   if (plate.length <= 3) return "***";
   return `${plate.slice(0, 2)}***${plate.slice(-2)}`;
 }
-
+function maskPhone(value) {
+  const p = String(value || "");
+  if (p.length <= 5) return "****";
+  return `${p.slice(0, 3)}****${p.slice(-2)}`;
+}
 async function visitorIpHash(request, env) {
   const ip = request.headers.get("CF-Connecting-IP") || request.headers.get("x-forwarded-for") || "unknown";
   return sha256Hex(`${env.IP_HASH_SALT || "move-car"}:${ip}`);
 }
 
+/* ============================================================
+   加密 / 哈希
+   ============================================================ */
 async function encryptText(env, value) {
-  assertEnv(env, ["DATA_ENCRYPTION_KEY"]);
+  assertConfig(env, ["DATA_ENCRYPTION_KEY"]);
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const key = await encryptionKey(env.DATA_ENCRYPTION_KEY);
   const encrypted = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode(value));
   return `${bytesToBase64Url(iv)}.${bytesToBase64Url(new Uint8Array(encrypted))}`;
 }
-
 async function decryptText(env, value) {
-  assertEnv(env, ["DATA_ENCRYPTION_KEY"]);
+  assertConfig(env, ["DATA_ENCRYPTION_KEY"]);
   const [ivText, cipherText] = String(value).split(".");
   const iv = base64UrlToBytes(ivText);
   const cipher = base64UrlToBytes(cipherText);
@@ -570,49 +855,27 @@ async function decryptText(env, value) {
   const decrypted = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, cipher);
   return new TextDecoder().decode(decrypted);
 }
-
 async function encryptionKey(secret) {
   const raw = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(secret));
   return crypto.subtle.importKey("raw", raw, "AES-GCM", false, ["encrypt", "decrypt"]);
 }
-
 async function sha256Hex(value) {
   const input = typeof value === "string" ? new TextEncoder().encode(value) : value;
   const digest = await crypto.subtle.digest("SHA-256", input);
   return bytesToHex(new Uint8Array(digest));
 }
-
 async function hmac(key, value) {
-  const cryptoKey = await crypto.subtle.importKey(
-    "raw",
-    typeof key === "string" ? new TextEncoder().encode(key) : key,
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"]
-  );
+  const cryptoKey = await crypto.subtle.importKey("raw", typeof key === "string" ? new TextEncoder().encode(key) : key, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
   return new Uint8Array(await crypto.subtle.sign("HMAC", cryptoKey, new TextEncoder().encode(value)));
 }
-
-function bytesToHex(bytes) {
-  return [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
-}
-
-function bytesToBase64(bytes) {
-  let binary = "";
-  bytes.forEach((byte) => (binary += String.fromCharCode(byte)));
-  return btoa(binary);
-}
-
-function bytesToBase64Url(bytes) {
-  return bytesToBase64(bytes).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
-}
-
+function bytesToHex(bytes) { return [...bytes].map((b) => b.toString(16).padStart(2, "0")).join(""); }
+function bytesToBase64(bytes) { let s = ""; bytes.forEach((b) => (s += String.fromCharCode(b))); return btoa(s); }
+function bytesToBase64Url(bytes) { return bytesToBase64(bytes).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", ""); }
 function base64UrlToBytes(value) {
   const base64 = String(value || "").replaceAll("-", "+").replaceAll("_", "/").padEnd(Math.ceil(value.length / 4) * 4, "=");
   const binary = atob(base64);
-  return Uint8Array.from(binary, (char) => char.charCodeAt(0));
+  return Uint8Array.from(binary, (c) => c.charCodeAt(0));
 }
-
 function toE164(phone, countryCode) {
   const trimmed = String(phone || "").trim();
   if (trimmed.startsWith("+")) return trimmed;

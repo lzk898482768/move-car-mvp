@@ -1,6 +1,29 @@
+# ─────────────────────────────────────────────────────────────
+# 本地开发环境变量（wrangler dev 读取本文件；生产请用 wrangler secret put）
+# 注意：现在大部分通知渠道改为「超级管理员后台 → D1 全局配置」,
+#       下列 TENCENT_* / PRIVACY_CALL_* 环境变量仅作兼容保留，可留空。
+# ─────────────────────────────────────────────────────────────
+
+# 必填：数据加密密钥（AES-GCM，加密手机号 / 各类 webhook），长度建议 32 位以上随机串
 DATA_ENCRYPTION_KEY=replace-with-a-long-random-secret
-TENCENT_SECRET_ID=replace-with-tencent-secret-id
-TENCENT_SECRET_KEY=replace-with-tencent-secret-key
+
+# 必填：访客 IP 哈希盐（用于限流去标识化）
+IP_HASH_SALT=replace-with-a-long-random-salt
+
+# 超级管理员首次引导账号，格式 用户名:密码
+# 仅当 admins 表为空时生效；管理员登录一次后该变量即失效，可删除。
+# 首次登录后请到后台「管理员账号」新建自己的账号并删除引导账号。
+ADMIN_BOOTSTRAP=admin:ChangeMe-123456
+
+# 可选：跨域来源。前端与 API 同源（Pages 服务绑定）时无需设置。
+CORS_ORIGIN=*
+
+# 可选：OCR 演示模式（无需腾讯云密钥即可返回固定车牌）
+# OCR_DEMO_MODE=true
+
+# ── 兼容保留（推荐改到管理员后台配置） ──
+TENCENT_SECRET_ID=
+TENCENT_SECRET_KEY=
 TENCENT_OCR_REGION=ap-guangzhou
 TENCENT_SMS_APP_ID=
 TENCENT_SMS_SIGN_NAME=
@@ -8,5 +31,3 @@ TENCENT_SMS_TEMPLATE_ID=
 TENCENT_SMS_REGION=ap-guangzhou
 PRIVACY_CALL_WEBHOOK_URL=
 PRIVACY_CALL_WEBHOOK_TOKEN=
-CORS_ORIGIN=http://localhost:4173
-IP_HASH_SALT=replace-with-a-long-random-salt

@@ -412,6 +412,30 @@ textarea { resize: vertical; min-height: 84px; }
   padding: 12px 14px; font-size: 12.5px; overflow: auto;
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
 }
+
+/* ---------- 管理员后台 ---------- */
+.group-title {
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: .4px;
+  color: var(--brand-2);
+  text-transform: none;
+  margin: 18px 0 10px;
+  padding-left: 10px;
+  border-left: 3px solid var(--brand-2);
+}
+.group-title:first-of-type { margin-top: 4px; }
+#adminConfigForm .grid-form { margin-bottom: 4px; }
+select {
+  appearance: none;
+  background-image: linear-gradient(45deg, transparent 50%, var(--text-soft) 50%),
+    linear-gradient(135deg, var(--text-soft) 50%, transparent 50%);
+  background-position: calc(100% - 20px) 50%, calc(100% - 14px) 50%;
+  background-size: 6px 6px, 6px 6px;
+  background-repeat: no-repeat;
+  padding-right: 38px;
+}
+.log-item .btn { width: auto; }
 .fade-in { animation: fade .35s ease both; }
 @keyframes fade { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
 

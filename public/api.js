@@ -36,8 +36,8 @@ export function hasApiBase() {
   return isSameOrigin() || Boolean(getApiBase());
 }
 
-// 统一请求封装
-async function request(path, { method = "GET", body } = {}) {
+// 统一请求封装（支持自定义 headers，如管理员令牌）
+async function request(path, { method = "GET", body, headers: extraHeaders } = {}) {
   const base = getApiBase();
   if (!base && !isSameOrigin()) {
     const err = new Error("未配置后端地址（API Base）。");
@@ -46,6 +46,7 @@ async function request(path, { method = "GET", body } = {}) {
   }
   const headers = {};
   if (body) headers["Content-Type"] = "application/json";
+  if (extraHeaders) Object.assign(headers, extraHeaders);
   let res;
   try {
     res = await fetch(`${base}${path}`, {
@@ -74,6 +75,12 @@ async function request(path, { method = "GET", body } = {}) {
   }
   return data;
 }
+
+// 管理员令牌本地缓存
+const ADMIN_KEY = "move_car_admin_token";
+export function saveAdminToken(token) { try { localStorage.setItem(ADMIN_KEY, token); } catch {} }
+export function loadAdminToken() { try { return localStorage.getItem(ADMIN_KEY) || ""; } catch { return ""; } }
+export function clearAdminToken() { try { localStorage.removeItem(ADMIN_KEY); } catch {} }
 
 export const api = {
   health: () => request("/api/health"),
@@ -107,6 +114,51 @@ export const api = {
   deleteVehicle: (ownerToken) =>
     request(`/api/owner/${encodeURIComponent(ownerToken)}/vehicle`, {
       method: "DELETE",
+    }),
+
+  // 车主：车牌 + 管理密码 找回 ownerToken
+  recoverOwner: (plateNumber, ownerPin) =>
+    request("/api/owner/recover", { method: "POST", body: { plateNumber, ownerPin } }),
+
+  // 超级管理员
+  adminLogin: (username, password) =>
+    request("/api/admin/login", { method: "POST", body: { username, password } }),
+
+  adminLogout: (token) =>
+    request("/api/admin/logout", {
+      method: "POST",
+      headers: { "X-Admin-Token": token },
+    }),
+
+  adminGetConfig: (token) =>
+    request("/api/admin/config", { headers: { "X-Admin-Token": token } }),
+
+  adminPutConfig: (token, settings) =>
+    request("/api/admin/config", {
+      method: "PUT",
+      headers: { "X-Admin-Token": token },
+      body: settings,
+    }),
+
+  adminListAccounts: (token) =>
+    request("/api/admin/accounts", { headers: { "X-Admin-Token": token } }),
+
+  adminCreateAccount: (token, payload) =>
+    request("/api/admin/accounts", {
+      method: "POST",
+      headers: { "X-Admin-Token": token },
+      body: payload,
+    }),
+
+  adminDeleteAccount: (token, username) =>
+    request(`/api/admin/accounts/${encodeURIComponent(username)}`, {
+      method: "DELETE",
+      headers: { "X-Admin-Token": token },
+    }),
+
+  adminLookup: (token, plate) =>
+    request(`/api/admin/lookup?plate=${encodeURIComponent(plate)}`, {
+      headers: { "X-Admin-Token": token },
     }),
 };
 

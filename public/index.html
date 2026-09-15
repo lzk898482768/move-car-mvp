@@ -55,6 +55,11 @@
             <input id="ownerPhone" name="ownerPhone" inputmode="tel" placeholder="11 位手机号" autocomplete="off" />
           </label>
 
+          <label class="span-2">管理密码（4-12 位，用于找回管理入口）
+            <input id="ownerPin" name="ownerPin" type="password" inputmode="numeric" placeholder="设置一个自己记得住的密码" autocomplete="new-password" />
+            <span class="field-hint">换手机 / 清缓存后，用「车牌 + 管理密码」即可重新进入管理后台。</span>
+          </label>
+
           <button type="submit" class="btn btn-primary span-2">创建挪车码</button>
         </form>
         <p class="form-note">至少配置一种通知方式。手机号仅保存在后端加密存储，访客不可见。</p>

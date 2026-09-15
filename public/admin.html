@@ -3,35 +3,36 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <title>扫码挪车 · 管理后台</title>
+    <meta name="robots" content="noindex,nofollow" />
+    <title>扫码挪车 · 超级管理员</title>
     <link rel="stylesheet" href="./styles.css" />
     <script src="./config.js"></script>
   </head>
-  <body data-page="owner">
+  <body data-page="admin">
     <header class="topbar">
-      <a class="brand" href="./index.html"><span class="logo">🚗</span>扫码挪车</a>
+      <a class="brand" href="./index.html"><span class="logo">🛡️</span>管理控制台</a>
       <nav>
         <a href="./index.html">生成</a>
-        <a href="./admin.html">管理员</a>
+        <a href="./owner.html">车主后台</a>
         <a href="./setup.html">说明</a>
       </nav>
     </header>
 
     <main class="shell wide">
       <section class="panel intro" style="border:none;background:none;box-shadow:none;padding:8px 4px 0">
-        <span class="eyebrow">管理后台</span>
-        <h1>我的挪车码</h1>
-        <p>查看二维码、调整通知渠道、查看通知记录，或重新生成 / 删除挪车码。换设备时用「车牌 + 管理密码」找回入口。</p>
+        <span class="eyebrow">超级管理员</span>
+        <h1>平台管理后台</h1>
+        <p>统一配置所有车主共用的通知渠道，查询车牌绑定的车主电话，并管理管理员账号。</p>
       </section>
 
-      <div id="ownerMount"><div class="card"><p class="muted">正在准备…</p></div></div>
+      <div id="adminMount"><div class="card"><p class="muted">正在准备…</p></div></div>
     </main>
 
     <nav class="bottom-nav">
       <a href="./index.html"><span class="ic">➕</span>生成</a>
       <a href="./demo.html"><span class="ic">▶️</span>演示</a>
-      <a href="./owner.html" class="active"><span class="ic">📊</span>后台</a>
-      <a href="./setup.html"><span class="ic">ℹ️</span>说明</a>
+      <a href="./owner.html"><span class="ic">📊</span>车主</a>
+      <a href="./admin.html" class="active"><span class="ic">🛡️</span>管理</a>
     </nav>
 
     <script src="./app.js" type="module"></script>
