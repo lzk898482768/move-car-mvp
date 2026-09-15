@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>扫码挪车 · 联系车主</title>
+    <link rel="stylesheet" href="./styles.css" />
+    <meta name="robots" content="noindex" />
+    <script src="./config.js"></script>
+  </head>
+  <body data-page="move">
+    <header class="topbar">
+      <a class="brand" href="./index.html"><span class="logo">🚗</span>扫码挪车</a>
+      <nav><a href="./privacy.html">隐私</a></nav>
+    </header>
+
+    <main class="shell compact">
+      <section class="panel" id="publicVehicle">
+        <div class="hero-plate"><div class="muted">正在读取二维码信息…</div></div>
+      </section>
+
+      <section class="panel" id="contactPanel">
+        <h2>通知车主挪车</h2>
+        <p class="muted">选择通知方式（默认已为你选好），点击下方按钮即可匿名提醒车主。</p>
+        <div id="channelPicker" style="margin:10px 0 4px"></div>
+        <div class="actions">
+          <button class="btn btn-primary cta" id="notifyButton" disabled>
+            通知车主挪车<span class="sub">匿名发送，不暴露你的身份</span>
+          </button>
+        </div>
+        <div id="contactResult" class="result hidden" style="margin-top:12px"></div>
+      </section>
+    </main>
+
+    <script src="./app.js" type="module"></script>
+  </body>
+</html>

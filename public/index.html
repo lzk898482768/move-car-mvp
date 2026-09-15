@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>扫码挪车 · 生成挪车码</title>
+    <link rel="stylesheet" href="./styles.css" />
+    <script src="./config.js"></script>
+  </head>
+  <body data-page="bind">
+    <header class="topbar">
+      <a class="brand" href="./index.html"><span class="logo">🚗</span>扫码挪车</a>
+      <nav>
+        <a href="./setup.html">说明</a>
+        <a href="./privacy.html">隐私</a>
+      </nav>
+    </header>
+
+    <main class="shell">
+      <section class="panel intro" style="border:none;background:none;box-shadow:none;padding:8px 4px 4px">
+        <span class="eyebrow">生成挪车码</span>
+        <h1>创建你的挪车码</h1>
+        <p>填写车牌并选择通知方式，系统会生成一张二维码。访客扫码后匿名通知你挪车，看不到你的手机号。</p>
+      </section>
+
+      <section class="panel">
+        <h2>1 · 车辆与通知方式</h2>
+        <form id="bindForm" class="grid-form">
+          <label class="span-2">车牌号
+            <input id="plateNumber" name="plateNumber" placeholder="例如 粤A12345" required autocomplete="off" />
+          </label>
+
+          <label class="span-2">企业微信机器人 Webhook（可选）
+            <input id="wechatWorkWebhook" name="wechatWorkWebhook" placeholder="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=..." autocomplete="off" />
+            <span class="field-hint">在企业微信群里添加「群机器人」即可获得。</span>
+          </label>
+
+          <label class="span-2">ShowDoc Webhook（可选）
+            <input id="showdocWebhook" name="showdocWebhook" placeholder="https://你的showdoc地址/webhook/..." autocomplete="off" />
+          </label>
+          <label class="span-2">ShowDoc Token（可选）
+            <input id="showdocToken" name="showdocToken" placeholder="如需要鉴权则填写" autocomplete="off" />
+          </label>
+
+          <div class="switch-row span-2">
+            <div class="meta"><b>短信通知</b><span>需填写手机号，由腾讯云短信下发</span></div>
+            <label class="switch"><input type="checkbox" id="smsEnabled" name="smsEnabled" /><span class="track"></span><span class="thumb"></span></label>
+          </div>
+          <div class="switch-row span-2">
+            <div class="meta"><b>隐私号呼叫</b><span>通过隐私号服务呼叫车主，隐藏真实号码</span></div>
+            <label class="switch"><input type="checkbox" id="privacyCallEnabled" name="privacyCallEnabled" /><span class="track"></span><span class="thumb"></span></label>
+          </div>
+
+          <label class="span-2">车主手机号（短信 / 隐私号需要）
+            <input id="ownerPhone" name="ownerPhone" inputmode="tel" placeholder="11 位手机号" autocomplete="off" />
+          </label>
+
+          <button type="submit" class="btn btn-primary span-2">创建挪车码</button>
+        </form>
+        <p class="form-note">至少配置一种通知方式。手机号仅保存在后端加密存储，访客不可见。</p>
+        <div id="bindResult" class="result hidden" style="margin-top:14px"></div>
+      </section>
+    </main>
+
+    <nav class="bottom-nav">
+      <a href="./index.html" class="active"><span class="ic">➕</span>生成</a>
+      <a href="./demo.html"><span class="ic">▶️</span>演示</a>
+      <a href="./owner.html"><span class="ic">📊</span>后台</a>
+      <a href="./setup.html"><span class="ic">ℹ️</span>说明</a>
+    </nav>
+
+    <script src="./app.js" type="module"></script>
+  </body>
+</html>

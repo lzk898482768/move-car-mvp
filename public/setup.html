@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>扫码挪车 · 使用说明</title>
+    <link rel="stylesheet" href="./styles.css" />
+    <script src="./config.js"></script>
+  </head>
+  <body data-page="setup">
+    <header class="topbar">
+      <a class="brand" href="./index.html"><span class="logo">🚗</span>扫码挪车</a>
+      <nav><a href="./privacy.html">隐私</a></nav>
+    </header>
+
+    <main class="shell">
+      <section class="panel intro" style="border:none;background:none;box-shadow:none;padding:8px 4px 4px">
+        <span class="eyebrow">使用说明</span>
+        <h1>三步用起来</h1>
+      </section>
+
+      <section class="panel">
+        <h2>当前版本（Cloudflare Worker 版）</h2>
+        <ul class="checklist">
+          <li>在首页填写车牌与通知方式，生成可调用的挪车码。</li>
+          <li>把二维码打印或贴出，访客扫码后一键匿名通知你。</li>
+          <li>在后台查看通知记录、调整渠道、重新生成或删除二维码。</li>
+        </ul>
+      </section>
+
+      <section class="panel">
+        <h2>检查后端状态</h2>
+        <p class="muted">配置好后端地址后，可在此查看接口健康状态。</p>
+        <form id="setupCheckForm" class="actions" style="margin-top:10px">
+          <button type="submit" class="btn btn-primary">检查后端 Health</button>
+        </form>
+        <div id="healthResult" class="result hidden" style="margin-top:14px"></div>
+      </section>
+
+      <section class="panel">
+        <h2>隐私说明</h2>
+        <p class="muted">访客只能看到脱敏车牌与通知按钮，无法获取你的手机号、微信号或 Webhook。详见 <a href="./privacy.html">隐私说明</a>。</p>
+      </section>
+    </main>
+
+    <nav class="bottom-nav">
+      <a href="./index.html"><span class="ic">➕</span>生成</a>
+      <a href="./demo.html"><span class="ic">▶️</span>演示</a>
+      <a href="./owner.html"><span class="ic">📊</span>后台</a>
+      <a href="./setup.html" class="active"><span class="ic">ℹ️</span>说明</a>
+    </nav>
+
+    <script src="./app.js" type="module"></script>
+  </body>
+</html>

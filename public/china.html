@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>扫码挪车 · 版本说明</title>
+    <link rel="stylesheet" href="./styles.css" />
+    <script src="./config.js"></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="./index.html"><span class="logo">🚗</span>扫码挪车</a>
+      <nav><a href="./setup.html">说明</a></nav>
+    </header>
+
+    <main class="shell">
+      <section class="panel intro" style="border:none;background:none;box-shadow:none;padding:8px 4px 4px">
+        <span class="eyebrow">版本说明</span>
+        <h1>为什么推荐部署到 Worker</h1>
+        <p>纯静态版适合零成本试用，但无法满足"匿名通知、后台管理、日志限流"。Worker 版补上了这些能力，同时国内访问依然顺畅。</p>
+      </section>
+
+      <section class="panel">
+        <h2>Worker 版保留的能力</h2>
+        <ul class="checklist">
+          <li>服务端匿名通知中转（企业微信 / ShowDoc / 短信 / 隐私号）。</li>
+          <li>通知日志与 120 秒限流。</li>
+          <li>远程重新生成或删除二维码。</li>
+          <li>访客完全看不到车主联系方式。</li>
+        </ul>
+      </section>
+
+      <section class="panel">
+        <h2>与纯静态版的取舍</h2>
+        <ul class="checklist bad">
+          <li>纯静态版：零后端、零费用，但联系方式编码进二维码。</li>
+          <li>Worker 版：需部署 Cloudflare + D1，但隐私与可管理性更好。</li>
+        </ul>
+        <p class="form-note">本项目默认使用 Worker 版；如需纯静态试用，可保留旧版前端逻辑。</p>
+      </section>
+    </main>
+
+    <nav class="bottom-nav">
+      <a href="./index.html"><span class="ic">➕</span>生成</a>
+      <a href="./demo.html"><span class="ic">▶️</span>演示</a>
+      <a href="./owner.html"><span class="ic">📊</span>后台</a>
+      <a href="./setup.html"><span class="ic">ℹ️</span>说明</a>
+    </nav>
+
+    <script src="./app.js" type="module"></script>
+  </body>
+</html>

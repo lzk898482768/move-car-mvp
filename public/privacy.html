@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>扫码挪车 · 隐私说明</title>
+    <link rel="stylesheet" href="./styles.css" />
+    <script src="./config.js"></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="./index.html"><span class="logo">🚗</span>扫码挪车</a>
+      <nav><a href="./setup.html">说明</a></nav>
+    </header>
+
+    <main class="shell">
+      <section class="panel intro" style="border:none;background:none;box-shadow:none;padding:8px 4px 4px">
+        <span class="eyebrow">隐私说明</span>
+        <h1>Worker 版的隐私边界</h1>
+        <p>访客可以匿名通知车主，但拿不到车主的真实联系方式。敏感信息始终保存在后端并加密。</p>
+      </section>
+
+      <section class="panel">
+        <h2>访客能看到什么</h2>
+        <ul class="checklist">
+          <li>脱敏车牌（如 粤B***45）。</li>
+          <li>可用的通知渠道名称（不会暴露具体账号）。</li>
+          <li>通知成功 / 失败 / 限流等状态提示。</li>
+        </ul>
+      </section>
+
+      <section class="panel">
+        <h2>后端保存什么（均加密）</h2>
+        <ul class="checklist">
+          <li>车主手机号：AES-GCM 加密后存入 D1。</li>
+          <li>ShowDoc Token、企业微信 Webhook：加密存储。</li>
+          <li>完整车牌：归一化后做哈希，对外只返回脱敏文本。</li>
+          <li>访客 IP：加盐哈希，仅用于限流。</li>
+        </ul>
+      </section>
+
+      <section class="panel">
+        <h2>访客拿不到什么</h2>
+        <ul class="checklist bad">
+          <li>车主手机号与微信号。</li>
+          <li>ShowDoc / 企业微信 Webhook 与 Token。</li>
+          <li>完整车牌与全部配置。</li>
+          <li>任何腾讯云密钥。</li>
+        </ul>
+      </section>
+    </main>
+
+    <nav class="bottom-nav">
+      <a href="./index.html"><span class="ic">➕</span>生成</a>
+      <a href="./demo.html"><span class="ic">▶️</span>演示</a>
+      <a href="./owner.html"><span class="ic">📊</span>后台</a>
+      <a href="./setup.html"><span class="ic">ℹ️</span>说明</a>
+    </nav>
+
+    <script src="./app.js" type="module"></script>
+  </body>
+</html>

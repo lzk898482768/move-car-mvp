@@ -1,0 +1,140 @@
+// Worker API 客户端（零依赖）
+// 读取 window.MOVE_CAR_API_BASE；若该值为空，则尝试用 localStorage 中用户手动填入的地址。
+
+const STORAGE_KEY = "move_car_api_base";
+
+export function normalizeBase(v) {
+  return v ? String(v).trim().replace(/\/+$/, "") : "";
+}
+
+export function getApiBase() {
+  const fromConfig = window.MOVE_CAR_API_BASE || "";
+  if (fromConfig) return normalizeBase(fromConfig);
+  try {
+    const stored = localStorage.getItem(STORAGE_KEY);
+    if (stored) return normalizeBase(stored);
+  } catch {}
+  return "";
+}
+
+export function setApiBase(value) {
+  try {
+    localStorage.setItem(STORAGE_KEY, normalizeBase(value));
+  } catch {}
+}
+
+export function hasApiBase() {
+  return Boolean(getApiBase());
+}
+
+// 统一请求封装
+async function request(path, { method = "GET", body } = {}) {
+  const base = getApiBase();
+  if (!base) {
+    const err = new Error("未配置后端地址（API Base）。");
+    err.code = "NO_API_BASE";
+    throw err;
+  }
+  const headers = {};
+  if (body) headers["Content-Type"] = "application/json";
+  let res;
+  try {
+    res = await fetch(`${base}${path}`, {
+      method,
+      headers,
+      body: body ? JSON.stringify(body) : undefined,
+    });
+  } catch (e) {
+    const err = new Error("网络错误，无法连接后端：" + (e.message || ""));
+    err.code = "NETWORK";
+    throw err;
+  }
+
+  let data = null;
+  try {
+    data = await res.json();
+  } catch {}
+
+  if (!res.ok) {
+    const err = new Error(
+      data?.message || (data?.error ? `请求失败：${data.error}` : `请求失败（${res.status}）`)
+    );
+    err.code = data?.error || "error";
+    err.status = res.status;
+    throw err;
+  }
+  return data;
+}
+
+export const api = {
+  health: () => request("/api/health"),
+
+  createVehicle: (input) =>
+    request("/api/vehicles", { method: "POST", body: input }),
+
+  getPublicVehicle: (token) =>
+    request(`/api/vehicles/${encodeURIComponent(token)}/public`),
+
+  notify: (token, channel) =>
+    request(`/api/vehicles/${encodeURIComponent(token)}/notify`, {
+      method: "POST",
+      body: channel ? { channel } : {},
+    }),
+
+  getOwnerVehicle: (ownerToken) =>
+    request(`/api/owner/${encodeURIComponent(ownerToken)}/vehicle`),
+
+  patchOwnerVehicle: (ownerToken, patch) =>
+    request(`/api/owner/${encodeURIComponent(ownerToken)}/vehicle`, {
+      method: "PATCH",
+      body: patch,
+    }),
+
+  regenerateToken: (ownerToken) =>
+    request(`/api/owner/${encodeURIComponent(ownerToken)}/vehicle/regenerate-token`, {
+      method: "POST",
+    }),
+
+  deleteVehicle: (ownerToken) =>
+    request(`/api/owner/${encodeURIComponent(ownerToken)}/vehicle`, {
+      method: "DELETE",
+    }),
+};
+
+// 生成访客页链接（基于当前前端所在域名，与后端地址解耦）
+export function buildMoveUrl(vehicleToken) {
+  const url = new URL("./move.html", location.href);
+  url.searchParams.set("token", vehicleToken);
+  return url.toString();
+}
+
+export function qrImageUrl(text) {
+  return `https://api.qrserver.com/v1/create-qr-code/?size=240x240&margin=8&data=${encodeURIComponent(text)}`;
+}
+
+// ownerToken 本地存储（用于后台自动登录）
+const OWNER_KEY = "move_car_owner_tokens";
+
+export function saveOwnerToken(ownerToken, maskedPlate) {
+  try {
+    const map = JSON.parse(localStorage.getItem(OWNER_KEY) || "{}");
+    map[ownerToken] = { maskedPlate, savedAt: Date.now() };
+    localStorage.setItem(OWNER_KEY, JSON.stringify(map));
+  } catch {}
+}
+
+export function loadOwnerTokens() {
+  try {
+    return JSON.parse(localStorage.getItem(OWNER_KEY) || "{}");
+  } catch {
+    return {};
+  }
+}
+
+export function clearOwnerToken(ownerToken) {
+  try {
+    const map = JSON.parse(localStorage.getItem(OWNER_KEY) || "{}");
+    delete map[ownerToken];
+    localStorage.setItem(OWNER_KEY, JSON.stringify(map));
+  } catch {}
+}

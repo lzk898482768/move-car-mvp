@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>扫码挪车 · 流程演示</title>
+    <link rel="stylesheet" href="./styles.css" />
+    <script src="./config.js"></script>
+  </head>
+  <body data-page="demo">
+    <header class="topbar">
+      <a class="brand" href="./index.html"><span class="logo">🚗</span>扫码挪车</a>
+      <nav><a href="./setup.html">说明</a></nav>
+    </header>
+
+    <main class="shell">
+      <section class="panel intro" style="border:none;background:none;box-shadow:none;padding:8px 4px 4px">
+        <span class="eyebrow">流程演示</span>
+        <h1>从生成到通知的完整流程</h1>
+        <p>演示动画：车主生成挪车码 → 访客扫码 → 匿名通知车主。本页不会真的发送消息。</p>
+      </section>
+
+      <section class="panel">
+        <div class="actions row" style="margin:0 0 16px">
+          <button class="btn btn-ghost btn-sm" id="replayDemoButton">↻ 重新播放</button>
+        </div>
+        <div id="demoFlow" class="stack" style="display:flex;flex-direction:column;gap:14px">
+          <div class="card fade-in step" style="--d:0s;border-left:4px solid var(--brand-1)">
+            <span class="pill"><span class="dot"></span>车主</span>
+            <h2 style="margin:10px 0 6px">生成挪车码</h2>
+            <p class="muted">填写车牌与通知方式，生成可打印的挪车二维码，联系方式加密保存在后端。</p>
+          </div>
+          <div class="card fade-in step" style="--d:.8s;border-left:4px solid var(--brand-3)">
+            <span class="pill"><span class="dot"></span>访客</span>
+            <h2 style="margin:10px 0 6px">扫码联系</h2>
+            <p class="muted">访客扫码后只看到脱敏车牌与一个「通知车主」按钮，无法获取你的手机号。</p>
+          </div>
+          <div class="card fade-in step" style="--d:1.6s;border-left:4px solid var(--ok)">
+            <span class="pill ok"><span class="dot"></span>通知</span>
+            <h2 style="margin:10px 0 6px">匿名提醒车主</h2>
+            <p class="muted">后端按你配置的渠道（企业微信 / ShowDoc / 短信 / 隐私号）推送，车主收到后自行处理。</p>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <nav class="bottom-nav">
+      <a href="./index.html"><span class="ic">➕</span>生成</a>
+      <a href="./demo.html" class="active"><span class="ic">▶️</span>演示</a>
+      <a href="./owner.html"><span class="ic">📊</span>后台</a>
+      <a href="./setup.html"><span class="ic">ℹ️</span>说明</a>
+    </nav>
+
+    <script src="./app.js" type="module"></script>
+  </body>
+</html>

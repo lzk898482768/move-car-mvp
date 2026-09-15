@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>扫码挪车 · 管理后台</title>
+    <link rel="stylesheet" href="./styles.css" />
+    <script src="./config.js"></script>
+  </head>
+  <body data-page="owner">
+    <header class="topbar">
+      <a class="brand" href="./index.html"><span class="logo">🚗</span>扫码挪车</a>
+      <nav>
+        <a href="./index.html">生成</a>
+        <a href="./setup.html">说明</a>
+      </nav>
+    </header>
+
+    <main class="shell wide">
+      <section class="panel intro" style="border:none;background:none;box-shadow:none;padding:8px 4px 0">
+        <span class="eyebrow">管理后台</span>
+        <h1>我的挪车码</h1>
+        <p>查看二维码、调整通知渠道、查看通知记录，或重新生成 / 删除挪车码。</p>
+      </section>
+
+      <div id="ownerMount"><div class="card"><p class="muted">正在准备…</p></div></div>
+    </main>
+
+    <nav class="bottom-nav">
+      <a href="./index.html"><span class="ic">➕</span>生成</a>
+      <a href="./demo.html"><span class="ic">▶️</span>演示</a>
+      <a href="./owner.html" class="active"><span class="ic">📊</span>后台</a>
+      <a href="./setup.html"><span class="ic">ℹ️</span>说明</a>
+    </nav>
+
+    <script src="./app.js" type="module"></script>
+  </body>
+</html>

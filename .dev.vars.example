@@ -1,0 +1,12 @@
+DATA_ENCRYPTION_KEY=replace-with-a-long-random-secret
+TENCENT_SECRET_ID=replace-with-tencent-secret-id
+TENCENT_SECRET_KEY=replace-with-tencent-secret-key
+TENCENT_OCR_REGION=ap-guangzhou
+TENCENT_SMS_APP_ID=
+TENCENT_SMS_SIGN_NAME=
+TENCENT_SMS_TEMPLATE_ID=
+TENCENT_SMS_REGION=ap-guangzhou
+PRIVACY_CALL_WEBHOOK_URL=
+PRIVACY_CALL_WEBHOOK_TOKEN=
+CORS_ORIGIN=http://localhost:4173
+IP_HASH_SALT=replace-with-a-long-random-salt

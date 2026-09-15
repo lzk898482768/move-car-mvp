@@ -1,0 +1,14 @@
+{
+  "name": "move-car-mvp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "node --check public/app.js && node --check public/config.js && node --check scripts/serve-public.mjs",
+    "serve:public": "node scripts/serve-public.mjs",
+    "serve:mock": "node scripts/mock-api.mjs"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  }
+}

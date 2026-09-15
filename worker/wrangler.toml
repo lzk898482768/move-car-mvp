@@ -1,0 +1,10 @@
+name = "move-car-api"
+main = "src/index.js"
+compatibility_date = "2026-06-09"
+workers_dev = true
+
+[[d1_databases]]
+binding = "DB"
+database_name = "move-car-db"
+database_id = "270965ef-fbc5-4306-967f-17845f76211e"
+migrations_dir = "migrations"
