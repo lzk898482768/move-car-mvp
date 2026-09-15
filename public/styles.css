@@ -604,6 +604,42 @@ select {
   background: #f2f6f3;
 }
 
+/* ============================================================
+   车牌点选输入（替代系统输入法）
+   ============================================================ */
+.plate-input-host { margin: 2px 0 8px; }
+.plate-picker { display: flex; flex-direction: column; gap: 10px; }
+
+.plate-type { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.plate-type-label { font-size: 13px; color: var(--text-soft); }
+.seg { display: inline-flex; background: #ecfdf3; border: 1px solid var(--border-strong); border-radius: 999px; padding: 3px; }
+.seg-btn { border: 0; background: transparent; color: #15803d; font-size: 13px; padding: 6px 13px; border-radius: 999px; cursor: pointer; transition: .12s; }
+.seg-btn.on { background: var(--brand-1); color: #fff; box-shadow: 0 1px 4px rgba(22, 163, 74, .4); }
+
+.plate-display { display: flex; gap: 6px; flex-wrap: wrap; }
+.plate-box {
+  width: 36px; height: 46px; display: flex; align-items: center; justify-content: center;
+  font-size: 22px; font-weight: 700; border-radius: 9px; background: #fff;
+  border: 2px dashed #cbd5e1; color: var(--text); cursor: pointer; user-select: none; transition: .12s;
+}
+.plate-box.filled { border-style: solid; border-color: var(--border-strong); background: #f0fdf4; }
+.plate-box.active { border-color: var(--brand-1); box-shadow: 0 0 0 3px rgba(22, 163, 74, .18); }
+.plate-box.last-new.filled { background: var(--grad); color: #fff; border-color: transparent; }
+
+.plate-kb { background: #f6fef9; border: 1px solid #dcfce7; border-radius: 14px; padding: 10px; }
+.plate-kb-hint { font-size: 12px; color: #15803d; margin-bottom: 8px; text-align: center; }
+.plate-kb-grid { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; }
+.plate-kb-grid.wrap-many { max-width: 360px; margin: 0 auto; }
+.plate-key {
+  min-width: 34px; height: 40px; padding: 0 8px; border: 1px solid #d1fae5; background: #fff;
+  border-radius: 8px; font-size: 16px; font-weight: 600; color: #065f46; cursor: pointer; transition: .1s;
+}
+.plate-key:hover { background: #ecfdf5; }
+.plate-key:active { background: var(--brand-1); color: #fff; border-color: var(--brand-1); }
+.plate-key.wide { flex: 1; max-width: 180px; }
+.plate-key.ghost { background: #f8fafc; color: var(--text-soft); border-color: var(--border); }
+.plate-kb-acts { display: flex; gap: 8px; margin-top: 10px; }
+
 /* 桌面端：底部导航改为隐藏（后台页） */
 @media (min-width: 720px) {
   .bottom-nav { display: none; }
