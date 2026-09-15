@@ -1,13 +1,22 @@
 // Worker API 客户端（零依赖）
-// 读取 window.MOVE_CAR_API_BASE；若该值为空，则尝试用 localStorage 中用户手动填入的地址。
+// window.MOVE_CAR_API_BASE 取值：
+//   - "same-origin"：同源模式，走 Pages Functions 服务绑定（推荐，配置见 functions/api/）
+//   - "https://..."：直连 Worker 地址
+//   - 留空：回退到 localStorage 中用户手动填入的地址。
 
 const STORAGE_KEY = "move_car_api_base";
+const SAME_ORIGIN = "same-origin";
 
 export function normalizeBase(v) {
   return v ? String(v).trim().replace(/\/+$/, "") : "";
 }
 
+function isSameOrigin() {
+  return (window.MOVE_CAR_API_BASE || "") === SAME_ORIGIN;
+}
+
 export function getApiBase() {
+  if (isSameOrigin()) return "";
   const fromConfig = window.MOVE_CAR_API_BASE || "";
   if (fromConfig) return normalizeBase(fromConfig);
   try {
@@ -24,7 +33,7 @@ export function setApiBase(value) {
 }
 
 export function hasApiBase() {
-  return Boolean(getApiBase());
+  return isSameOrigin() || Boolean(getApiBase());
 }
 
 // 统一请求封装
