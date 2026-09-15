@@ -71,6 +71,24 @@ function showResult(el, html, error = false) {
   el.innerHTML = html;
 }
 
+function fmtDate(value) {
+  if (!value) return "-";
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? "-" : d.toLocaleString("zh-CN");
+}
+
+function downloadFile(filename, text) {
+  const blob = new Blob([text], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
 // 简单模态
 function openModal({ title, body, confirmText, danger, onConfirm }) {
   let mask = $("#modalMask");
@@ -132,7 +150,7 @@ const CHANNEL_LABELS = {
 };
 function channelPill(ch, ok) {
   const label = CHANNEL_LABELS[ch] || ch;
-  return `<span class="pill ${ok ? "ok" : ""}"><span class="dot"></span>${escapeHtml(label)}</span>`;
+  return `<span class="pill ${ok ? "ok" : "off"}"><span class="dot"></span>${escapeHtml(label)}</span>`;
 }
 
 /* ============================================================
@@ -688,8 +706,36 @@ async function renderAdminConsole(token) {
   mount.innerHTML = `
   <div class="dash-grid fade-in">
     <section class="card span-2" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
-      <div><h2 style="margin:0">🛡️ 超级管理员控制台</h2><p class="muted" style="margin:4px 0 0">全局通知渠道 · 广告位 · 车牌查手机号 · 账号管理</p></div>
-      <button class="btn btn-sm btn-ghost" id="adLogout">退出登录</button>
+      <div><h2 style="margin:0">🛡️ 超级管理员控制台</h2><p class="muted" style="margin:4px 0 0">车牌管理 · 全局通知渠道 · 广告位 · 车牌查手机号 · 账号管理</p></div>
+      <div class="actions row" style="margin:0;gap:8px">
+        <button class="btn btn-sm btn-ghost" id="adChangePwd">修改我的密码</button>
+        <button class="btn btn-sm btn-ghost" id="adLogout">退出登录</button>
+      </div>
+    </section>
+
+    <!-- 车牌管理 -->
+    <section class="card span-2">
+      <h2>🚗 车牌管理</h2>
+      <p class="muted">集中管理所有挪车码绑定：新增 / 编辑 / 删除 / 批量导入导出，也可重置车主查看密码或直接进入其车主后台。</p>
+
+      <div class="row-actions" style="margin-top:12px">
+        <input id="vhSearch" placeholder="搜索车牌 / 手机号 / ID" style="flex:1;min-width:150px" />
+        <button class="btn btn-sm" id="vhSearchBtn">查询</button>
+        <button class="btn btn-sm btn-ghost" id="vhResetBtn">重置</button>
+      </div>
+      <div class="row-actions" style="margin-top:8px">
+        <button class="btn btn-sm btn-primary" id="vhAdd">＋ 新增车牌</button>
+        <button class="btn btn-sm btn-ghost" id="vhImportBtn">导入 CSV / JSON</button>
+        <button class="btn btn-sm btn-ghost" id="vhExportBtn">导出 CSV</button>
+        <input type="file" id="vhImportFile" accept=".csv,.json,text/csv,application/json" class="hidden" />
+      </div>
+
+      <div id="vhListBox" style="margin-top:12px"><p class="muted">正在加载…</p></div>
+      <div id="vhResult" class="result hidden" style="margin-top:10px"></div>
+      <details style="margin-top:12px">
+        <summary class="muted" style="cursor:pointer">导入格式说明</summary>
+        <p class="field-hint" style="margin-top:8px">支持 CSV 与 JSON。CSV 表头顺序：<b>车牌号,查看密码,手机号,短信通知,隐私号呼叫,企业微信Webhook,ShowDocWebhook</b>（表头行可省略；开关填「是/否」）。重复车牌会自动跳过，不会覆盖已有绑定。</p>
+      </details>
     </section>
 
     <!-- 全局通知渠道 -->
@@ -815,6 +861,69 @@ async function renderAdminConsole(token) {
       showResult(result, escapeHtml(err.message || "添加失败"), true);
     }
   });
+
+  // 修改管理员自己的密码
+  $("#adChangePwd", mount).onclick = () => openAdminPasswordModal(token);
+
+  // 车牌管理
+  reloadAdminVehicles(token, "");
+  const doSearch = () => reloadAdminVehicles(token, $("#vhSearch", mount).value.trim());
+  $("#vhSearchBtn", mount).onclick = doSearch;
+  $("#vhSearch", mount).addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); doSearch(); } });
+  $("#vhResetBtn", mount).onclick = () => { $("#vhSearch", mount).value = ""; reloadAdminVehicles(token, ""); };
+  $("#vhAdd", mount).onclick = () => openVehicleEditor(token, null);
+  $("#vhImportBtn", mount).onclick = () => $("#vhImportFile", mount).click();
+  $("#vhImportFile", mount).addEventListener("change", async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    const result = $("#vhResult", mount);
+    showResult(result, `正在导入 ${escapeHtml(file.name)}…`);
+    try {
+      const text = await file.text();
+      const items = parseVehicleImport(text);
+      if (!items.length) { showResult(result, "没有解析到有效数据，请检查文件格式。", true); return; }
+      const r = await api.adminImportVehicles(token, items);
+      const failLines = (r.failed || []).slice(0, 10).map((f) => `<div class="t">${escapeHtml(f.plateNumber || "?")}：${escapeHtml(f.reason)}</div>`).join("");
+      showResult(result,
+        `<div class="notice">
+           ✅ ${escapeHtml(r.message || "导入完成")}
+           ${(r.skipped || []).length ? `<div class="t" style="margin-top:6px">重复跳过：${escapeHtml(r.skipped.slice(0, 20).join("、"))}${r.skipped.length > 20 ? " …" : ""}</div>` : ""}
+           ${(r.failed || []).length ? `<div class="t" style="margin-top:6px">失败明细：</div>${failLines}` : ""}
+         </div>`);
+      toast("导入完成", "ok");
+      await reloadAdminVehicles(token, $("#vhSearch", mount).value.trim());
+    } catch (err) {
+      if (err.status === 401) { clearAdminToken(); renderAdminLogin(); return; }
+      showResult(result, escapeHtml(err.message || "导入失败"), true);
+    }
+  });
+  $("#vhExportBtn", mount).onclick = async () => {
+    const result = $("#vhResult", mount);
+    showResult(result, "正在导出…");
+    try {
+      const r = await api.adminExportVehicles(token);
+      const list = r.vehicles || [];
+      const rows = [["车牌号", "查看密码", "手机号", "短信通知", "隐私号呼叫", "企业微信Webhook", "ShowDocWebhook", "绑定ID", "创建时间"]];
+      list.forEach((v) => rows.push([
+        v.plateNumber, "", v.ownerPhone,
+        v.smsEnabled ? "是" : "否", v.privacyCallEnabled ? "是" : "否",
+        v.wechatWorkWebhook, v.showdocWebhook, v.id, fmtDate(v.createdAt),
+      ]));
+      const csv = rows
+        .map((cells) => cells.map((c) => {
+          const s = String(c ?? "");
+          return /[",\n]/.test(s) ? `"${s.replaceAll('"', '""')}"` : s;
+        }).join(","))
+        .join("\r\n");
+      downloadFile(`move-car-vehicles-${new Date().toISOString().slice(0, 10)}.csv`, "\ufeff" + csv);
+      showResult(result, `✅ 已导出 ${list.length} 条车牌记录（查看密码只存哈希，无法导出，导入时再填即可）。`);
+      toast("已导出", "ok");
+    } catch (err) {
+      if (err.status === 401) { clearAdminToken(); renderAdminLogin(); return; }
+      showResult(result, escapeHtml(err.message || "导出失败"), true);
+    }
+  };
 
   // 保存全局配置
   $("#adminConfigForm", mount).addEventListener("submit", async (e) => {
@@ -1015,6 +1124,259 @@ function renderAdminAdsList(token, positions, ads) {
       });
     })
   );
+}
+
+/* ---------------- 车牌管理（后台） ---------------- */
+async function reloadAdminVehicles(token, q) {
+  const box = $("#vhListBox");
+  if (box) box.innerHTML = `<p class="muted">正在加载…</p>`;
+  try {
+    const r = await api.adminListVehicles(token, q);
+    renderAdminVehiclesList(token, r.vehicles || []);
+  } catch (err) {
+    if (err.status === 401) { clearAdminToken(); renderAdminLogin(); return; }
+    if (box) box.innerHTML = `<p class="muted">${escapeHtml(err.message || "加载失败")}</p>`;
+  }
+}
+
+function renderAdminVehiclesList(token, vehicles) {
+  const box = $("#vhListBox");
+  if (!box) return;
+  if (!vehicles.length) {
+    box.innerHTML = `<p class="muted">没有匹配的车牌记录。</p>`;
+    return;
+  }
+  box.innerHTML = `<div class="log-list">` + vehicles.map((v) => `
+      <div class="log-item" style="flex-wrap:wrap;align-items:flex-start;gap:8px">
+        <div style="flex:1;min-width:170px">
+          <div class="ch" style="font-size:15px">
+            ${escapeHtml(v.plateNumber)}
+            ${v.plateMissing ? `<span class="pill warn"><span class="dot"></span>待补全</span>` : ""}
+          </div>
+          <div class="t">#${v.id} · ${v.ownerPhone ? escapeHtml(v.ownerPhone) : "未登记手机号"} · ${v.hasPin ? "已设查看密码" : "未设查看密码"}</div>
+          <div class="t">创建 ${escapeHtml(fmtDate(v.createdAt))}</div>
+        </div>
+        <div class="channels" style="flex:1 1 100%">
+          ${channelPill("wechat_work", Boolean(v.wechatWorkWebhook))}
+          ${channelPill("showdoc", Boolean(v.showdocWebhook))}
+          ${channelPill("sms", Boolean(v.smsEnabled))}
+          ${channelPill("privacy_call", Boolean(v.privacyCallEnabled))}
+        </div>
+        <div class="actions row" style="margin:0;gap:6px;flex:1 1 100%">
+          <button class="btn btn-sm btn-ghost" data-vh-edit="${v.id}">编辑</button>
+          <button class="btn btn-sm btn-ghost" data-vh-pin="${v.id}">改密码</button>
+          <button class="btn btn-sm btn-primary" data-vh-enter="${v.id}">进入车主后台</button>
+          <button class="btn btn-sm btn-ghost" data-vh-del="${v.id}">删除</button>
+        </div>
+      </div>`).join("") + `</div>`;
+
+  const find = (id) => vehicles.find((x) => String(x.id) === String(id));
+  const refresh = () => reloadAdminVehicles(token, $("#vhSearch")?.value.trim() || "");
+
+  $$("[data-vh-edit]", box).forEach((b) =>
+    b.addEventListener("click", () => openVehicleEditor(token, find(b.dataset.vhEdit)))
+  );
+  $$("[data-vh-pin]", box).forEach((b) =>
+    b.addEventListener("click", () => openVehiclePinEditor(token, find(b.dataset.vhPin)))
+  );
+  $$("[data-vh-enter]", box).forEach((b) =>
+    b.addEventListener("click", async () => {
+      try {
+        const r = await api.adminVehicleOwnerToken(token, b.dataset.vhEnter);
+        const url = `${new URL("./owner.html", location.href).toString()}?token=${encodeURIComponent(r.ownerToken)}`;
+        window.open(url, "_blank", "noopener");
+        toast("已在新标签页打开车主后台", "ok");
+      } catch (err) {
+        if (err.status === 401) { clearAdminToken(); renderAdminLogin(); return; }
+        toast(err.message || "打开失败", "err");
+      }
+    })
+  );
+  $$("[data-vh-del]", box).forEach((b) =>
+    b.addEventListener("click", () => {
+      const v = find(b.dataset.vhDel);
+      if (!v) return;
+      openModal({
+        title: "删除该车牌绑定？",
+        body: `将删除 <b>${escapeHtml(v.plateNumber)}</b>（#${v.id}）的挪车码与全部通知记录，二维码立即失效且无法恢复。`,
+        confirmText: "确认删除",
+        danger: true,
+        onConfirm: async () => {
+          try {
+            await api.adminDeleteVehicle(token, v.id);
+            toast("已删除", "ok");
+            await refresh();
+          } catch (err) { toast(err.message || "删除失败", "err"); }
+        },
+      });
+    })
+  );
+}
+
+function openVehicleEditor(token, vehicle) {
+  const isEdit = Boolean(vehicle);
+  openModal({
+    title: isEdit ? `编辑车牌 #${vehicle.id}` : "新增车牌绑定",
+    body: `<div class="grid-form" style="margin-top:6px">
+        <label class="span-2">车牌号
+          <input id="vePlate" value="${escapeHtml(vehicle?.plateNumber || "")}" placeholder="例如 粤A12345" />
+        </label>
+        <label class="span-2">车主手机号（短信 / 隐私号需要）
+          <input id="vePhone" value="${escapeHtml(vehicle?.ownerPhone || "")}" placeholder="11 位手机号" />
+        </label>
+        <label class="span-2">企业微信 Webhook
+          <input id="veWechat" value="${escapeHtml(vehicle?.wechatWorkWebhook || "")}" placeholder="https://qyapi.weixin.qq.com/..." />
+        </label>
+        <label class="span-2">ShowDoc Webhook
+          <input id="veShowdoc" value="${escapeHtml(vehicle?.showdocWebhook || "")}" placeholder="https://..." />
+        </label>
+        <div class="switch-row span-2">
+          <div class="meta"><b>短信通知</b><span>需填手机号 + 平台短信通道</span></div>
+          <label class="switch"><input type="checkbox" id="veSms" ${vehicle?.smsEnabled ? "checked" : ""}><span class="track"></span><span class="thumb"></span></label>
+        </div>
+        <div class="switch-row span-2">
+          <div class="meta"><b>隐私号呼叫</b><span>需填手机号 + 平台隐私号通道</span></div>
+          <label class="switch"><input type="checkbox" id="vePrivacy" ${vehicle?.privacyCallEnabled ? "checked" : ""}><span class="track"></span><span class="thumb"></span></label>
+        </div>
+        <label class="span-2">${isEdit ? "重置查看密码（留空则不变）" : "查看密码（可选，4-12 位数字）"}
+          <input id="vePin" placeholder="4-12 位数字" />
+        </label>
+        <p class="field-hint" style="grid-column:1/-1">车主用「车牌 + 查看密码」在管理后台找回入口。</p>
+      </div>`,
+    confirmText: isEdit ? "保存修改" : "创建绑定",
+    onConfirm: async () => {
+      const payload = {
+        plateNumber: $("#vePlate").value.trim(),
+        ownerPhone: $("#vePhone").value.trim(),
+        wechatWorkWebhook: $("#veWechat").value.trim(),
+        showdocWebhook: $("#veShowdoc").value.trim(),
+        smsEnabled: $("#veSms").checked,
+        privacyCallEnabled: $("#vePrivacy").checked,
+      };
+      const pin = $("#vePin").value.trim();
+      if (pin) payload.ownerPin = pin;
+      if (payload.smsEnabled || payload.privacyCallEnabled) {
+        if (!payload.ownerPhone && !vehicle?.ownerPhone) return toast("开启短信/隐私号需填写手机号", "err");
+      }
+      try {
+        const r = isEdit
+          ? await api.adminUpdateVehicle(token, vehicle.id, payload)
+          : await api.adminCreateVehicle(token, payload);
+        toast(r.message || (isEdit ? "已保存" : "已创建"), "ok");
+        await reloadAdminVehicles(token, $("#vhSearch")?.value.trim() || "");
+      } catch (err) {
+        if (err.status === 401) { clearAdminToken(); renderAdminLogin(); return; }
+        toast(err.message || "保存失败", "err");
+      }
+    },
+  });
+}
+
+function openVehiclePinEditor(token, vehicle) {
+  if (!vehicle) return;
+  openModal({
+    title: `修改 ${vehicle.plateNumber} 的查看密码`,
+    body: `<div class="grid-form" style="margin-top:6px">
+        <label class="span-2">新的查看密码
+          <input id="vpPin" placeholder="4-12 位数字，留空则清除密码" />
+        </label>
+        <p class="field-hint" style="grid-column:1/-1">清空后，车主将只能凭原管理链接进入后台，无法用「车牌 + 密码」找回。</p>
+      </div>`,
+    confirmText: "保存",
+    onConfirm: async () => {
+      const pin = $("#vpPin").value.trim();
+      if (pin && !/^\d{4,12}$/.test(pin)) return toast("查看密码需为 4-12 位数字", "err");
+      try {
+        await api.adminUpdateVehicle(token, vehicle.id, { ownerPin: pin });
+        toast(pin ? "查看密码已更新" : "已清除查看密码", "ok");
+        await reloadAdminVehicles(token, $("#vhSearch")?.value.trim() || "");
+      } catch (err) {
+        if (err.status === 401) { clearAdminToken(); renderAdminLogin(); return; }
+        toast(err.message || "保存失败", "err");
+      }
+    },
+  });
+}
+
+function openAdminPasswordModal(token) {
+  openModal({
+    title: "修改我的登录密码",
+    body: `<div class="grid-form" style="margin-top:6px">
+        <label class="span-2">当前密码
+          <input id="apCur" type="password" autocomplete="current-password" />
+        </label>
+        <label class="span-2">新密码（至少 8 位）
+          <input id="apNew" type="password" autocomplete="new-password" />
+        </label>
+        <label class="span-2">确认新密码
+          <input id="apNew2" type="password" autocomplete="new-password" />
+        </label>
+        <p class="field-hint" style="grid-column:1/-1">修改成功后所有管理员会话会立即失效，需要重新登录。</p>
+      </div>`,
+    confirmText: "确认修改",
+    onConfirm: async () => {
+      const cur = $("#apCur").value;
+      const nw = $("#apNew").value;
+      if (nw.length < 8) return toast("新密码至少 8 位", "err");
+      if (nw !== $("#apNew2").value) return toast("两次输入的新密码不一致", "err");
+      try {
+        await api.adminChangePassword(token, cur, nw);
+        clearAdminToken();
+        toast("密码已修改，请重新登录", "ok");
+        renderAdminLogin();
+      } catch (err) {
+        toast(err.message || "修改失败", "err");
+      }
+    },
+  });
+}
+
+/* ---------------- 导入解析（CSV / JSON） ---------------- */
+const IMPORT_HEADERS = ["车牌号", "查看密码", "手机号", "短信通知", "隐私号呼叫", "企业微信Webhook", "ShowDocWebhook"];
+
+function truthyFlag(value) {
+  if (typeof value === "boolean") return value;
+  return ["1", "true", "是", "y", "yes", "开", "on"].includes(String(value ?? "").trim().toLowerCase());
+}
+
+function normalizeImportItem(raw) {
+  return {
+    plateNumber: String(raw.plateNumber ?? raw["车牌号"] ?? raw.plate ?? "").trim(),
+    ownerPin: String(raw.ownerPin ?? raw["查看密码"] ?? raw["管理密码"] ?? raw.pin ?? "").trim(),
+    ownerPhone: String(raw.ownerPhone ?? raw["手机号"] ?? raw.phone ?? "").trim(),
+    smsEnabled: truthyFlag(raw.smsEnabled ?? raw["短信通知"]),
+    privacyCallEnabled: truthyFlag(raw.privacyCallEnabled ?? raw["隐私号呼叫"]),
+    wechatWorkWebhook: String(raw.wechatWorkWebhook ?? raw["企业微信Webhook"] ?? "").trim(),
+    showdocWebhook: String(raw.showdocWebhook ?? raw["ShowDocWebhook"] ?? "").trim(),
+  };
+}
+
+function parseVehicleImport(text) {
+  const trimmed = String(text || "").trim();
+  if (!trimmed) return [];
+  if (trimmed.startsWith("[") || trimmed.startsWith("{")) {
+    const data = JSON.parse(trimmed);
+    const arr = Array.isArray(data) ? data : (data.items || data.vehicles || []);
+    return arr.map(normalizeImportItem).filter((x) => x.plateNumber);
+  }
+  const lines = trimmed.split(/\r?\n/).filter((l) => l.trim());
+  if (!lines.length) return [];
+  const start = /车牌|plate/i.test(lines[0]) ? 1 : 0;
+  const out = [];
+  for (let i = start; i < lines.length; i++) {
+    const cells = lines[i].split(",").map((c) => c.trim().replace(/^"|"$/g, ""));
+    if (!cells[0]) continue;
+    out.push(normalizeImportItem({
+      plateNumber: cells[0],
+      ownerPin: cells[1],
+      ownerPhone: cells[2],
+      smsEnabled: cells[3],
+      privacyCallEnabled: cells[4],
+      wechatWorkWebhook: cells[5],
+      showdocWebhook: cells[6],
+    }));
+  }
+  return out.filter((x) => x.plateNumber);
 }
 
 async function loadAdminAccounts(token) {

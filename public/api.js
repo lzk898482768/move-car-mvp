@@ -188,6 +188,55 @@ export const api = {
       method: "DELETE",
       headers: { "X-Admin-Token": token },
     }),
+
+  // 车牌（车辆绑定）管理
+  adminListVehicles: (token, q) =>
+    request(`/api/admin/vehicles${q ? `?q=${encodeURIComponent(q)}` : ""}`, {
+      headers: { "X-Admin-Token": token },
+    }),
+
+  adminCreateVehicle: (token, payload) =>
+    request("/api/admin/vehicles", {
+      method: "POST",
+      headers: { "X-Admin-Token": token },
+      body: payload,
+    }),
+
+  adminUpdateVehicle: (token, id, payload) =>
+    request(`/api/admin/vehicles/${encodeURIComponent(id)}`, {
+      method: "PUT",
+      headers: { "X-Admin-Token": token },
+      body: payload,
+    }),
+
+  adminDeleteVehicle: (token, id) =>
+    request(`/api/admin/vehicles/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+      headers: { "X-Admin-Token": token },
+    }),
+
+  adminImportVehicles: (token, items) =>
+    request("/api/admin/vehicles/import", {
+      method: "POST",
+      headers: { "X-Admin-Token": token },
+      body: { items },
+    }),
+
+  adminExportVehicles: (token) =>
+    request("/api/admin/vehicles/export", { headers: { "X-Admin-Token": token } }),
+
+  adminVehicleOwnerToken: (token, id) =>
+    request(`/api/admin/vehicles/${encodeURIComponent(id)}/owner-token`, {
+      headers: { "X-Admin-Token": token },
+    }),
+
+  // 管理员修改自己的登录密码
+  adminChangePassword: (token, currentPassword, newPassword) =>
+    request("/api/admin/password", {
+      method: "POST",
+      headers: { "X-Admin-Token": token },
+      body: { currentPassword, newPassword },
+    }),
 };
 
 // 生成访客页链接（基于当前前端所在域名，与后端地址解耦）

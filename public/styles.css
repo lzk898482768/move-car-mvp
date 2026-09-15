@@ -197,6 +197,15 @@ h2 { font-size: 17px; margin: 0 0 14px; font-weight: 700; }
 .actions.row { flex-direction: row; flex-wrap: wrap; }
 .actions.row .btn { flex: 1; min-width: 120px; }
 
+/* 后台工具条（搜索 / 批量操作） */
+.row-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.row-actions .btn { width: auto; flex: none; }
+.row-actions input { flex: 1 1 150px; }
+details > summary { list-style: none; }
+details > summary::-webkit-details-marker { display: none; }
+details > summary::before { content: "▸ "; }
+details[open] > summary::before { content: "▾ "; }
+
 /* ---------- 表单 ---------- */
 .grid-form { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 label { display: flex; flex-direction: column; gap: 6px; font-size: 13.5px; font-weight: 600; color: var(--text-soft); }
@@ -411,6 +420,7 @@ textarea { resize: vertical; min-height: 84px; }
   border: 1px solid var(--border-strong);
 }
 .pill.ok { background: rgba(34,197,94,.14); color: var(--brand-1); border-color: rgba(34,197,94,.32); }
+.pill.off { background: rgba(16,60,40,.05); color: var(--text-mute); border-color: var(--border); }
 .pill.warn { background: rgba(245,158,11,.12); color: #b45309; border-color: rgba(245,158,11,.3); }
 .pill.err { background: rgba(239,68,68,.1); color: var(--err); border-color: rgba(239,68,68,.3); }
 .pill .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }

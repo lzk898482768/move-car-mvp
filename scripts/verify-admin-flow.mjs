@@ -180,6 +180,108 @@ ok("重复删除 → 404", adDelAgain.status === 404, String(adDelAgain.status))
 const pubAds4 = await call("GET", "/api/ads?position=move_top");
 ok("删除后公开接口为空", (pubAds4.data?.ads || []).length === 0);
 
+console.log("\n=== 10.6 车牌管理（增 / 改 / 删 / 导入 / 导出 / 取 ownerToken） ===");
+const noAuthVh = await call("GET", "/api/admin/vehicles");
+ok("未授权读车牌列表 → 401", noAuthVh.status === 401, String(noAuthVh.status));
+const noAuthVhCreate = await call("POST", "/api/admin/vehicles", { body: { plateNumber: "沪B11111" } });
+ok("未授权新增车牌 → 401", noAuthVhCreate.status === 401, String(noAuthVhCreate.status));
+const noAuthVhExport = await call("GET", "/api/admin/vehicles/export");
+ok("未授权导出 → 401", noAuthVhExport.status === 401, String(noAuthVhExport.status));
+
+const vhBadPlate = await call("POST", "/api/admin/vehicles", { token: adminToken, body: { plateNumber: "bad!!" } });
+ok("非法车牌被拒", vhBadPlate.status === 400, String(vhBadPlate.status));
+const vhBadPin = await call("POST", "/api/admin/vehicles", { token: adminToken, body: { plateNumber: `沪B${stamp}1`, ownerPin: "12" } });
+ok("非法查看密码被拒", vhBadPin.status === 400, String(vhBadPin.status));
+
+const vhA = await call("POST", "/api/admin/vehicles", {
+  token: adminToken,
+  body: { plateNumber: `沪B${stamp}1`, ownerPhone: "13900000011", ownerPin: "1357", smsEnabled: true, wechatWorkWebhook: "https://example.com/w1" },
+});
+ok("新增车牌 201", vhA.status === 201, JSON.stringify(vhA.data));
+const vhAId = vhA.data?.id;
+ok("返回车辆 id", Boolean(vhAId));
+
+const vhDup = await call("POST", "/api/admin/vehicles", { token: adminToken, body: { plateNumber: `沪B${stamp}1` } });
+ok("重复车牌被拒（409）", vhDup.status === 409, String(vhDup.status));
+
+const vhB = await call("POST", "/api/admin/vehicles", { token: adminToken, body: { plateNumber: `沪B${stamp}2`, ownerPhone: "13900000022" } });
+ok("新增第二辆车", vhB.status === 201, JSON.stringify(vhB.data));
+const vhBId = vhB.data?.id;
+
+const vhList = await call("GET", "/api/admin/vehicles", { token: adminToken });
+ok("列表返回", vhList.status === 200 && Array.isArray(vhList.data?.vehicles), JSON.stringify(vhList.data).slice(0, 120));
+const rowA = (vhList.data?.vehicles || []).find((v) => v.id === vhAId);
+ok("列表能还原明文车牌（非脱敏）", rowA?.plateNumber === `沪B${stamp}1`, String(rowA?.plateNumber));
+ok("列表能还原手机号", rowA?.ownerPhone === "13900000011", String(rowA?.ownerPhone));
+ok("列表能还原企业微信 Webhook", rowA?.wechatWorkWebhook === "https://example.com/w1", String(rowA?.wechatWorkWebhook));
+ok("plateMissing = false", rowA?.plateMissing === false);
+
+const searchPlate = await call("GET", `/api/admin/vehicles?q=${encodeURIComponent(`沪B${stamp}1`)}`, { token: adminToken });
+ok("按车牌搜索命中", (searchPlate.data?.vehicles || []).some((v) => v.id === vhAId), JSON.stringify(searchPlate.data).slice(0, 120));
+const searchPhone = await call("GET", "/api/admin/vehicles?q=13900000022", { token: adminToken });
+ok("按手机号搜索命中", (searchPhone.data?.vehicles || []).some((v) => v.id === vhBId));
+const searchId = await call("GET", `/api/admin/vehicles?q=${vhAId}`, { token: adminToken });
+ok("按 ID 搜索命中", (searchId.data?.vehicles || []).some((v) => v.id === vhAId));
+
+// 编辑：改车牌 + 关短信 + 重置查看密码
+const vhUpd = await call("PUT", `/api/admin/vehicles/${vhAId}`, {
+  token: adminToken,
+  body: { plateNumber: `沪B${stamp}9`, smsEnabled: false, ownerPin: "2468" },
+});
+ok("编辑车牌成功", vhUpd.status === 200, JSON.stringify(vhUpd.data));
+const vhList2 = await call("GET", `/api/admin/vehicles?q=${encodeURIComponent(`沪B${stamp}9`)}`, { token: adminToken });
+const rowA2 = (vhList2.data?.vehicles || []).find((v) => v.id === vhAId);
+ok("新车牌已生效", rowA2?.plateNumber === `沪B${stamp}9`, String(rowA2?.plateNumber));
+ok("短信已关闭", rowA2?.smsEnabled === false);
+ok("手机号仍在（未传则不改）", rowA2?.ownerPhone === "13900000011", String(rowA2?.ownerPhone));
+const recoverNewPin = await call("POST", "/api/owner/recover", { body: { plateNumber: `沪B${stamp}9`, ownerPin: "2468" } });
+ok("车主可用新查看密码找回", recoverNewPin.status === 200, JSON.stringify(recoverNewPin.data));
+const recoverOldPin = await call("POST", "/api/owner/recover", { body: { plateNumber: `沪B${stamp}9`, ownerPin: "1357" } });
+ok("旧查看密码已失效", recoverOldPin.status === 404, String(recoverOldPin.status));
+
+const vhUpdDup = await call("PUT", `/api/admin/vehicles/${vhAId}`, { token: adminToken, body: { plateNumber: `沪B${stamp}2` } });
+ok("编辑成已占用车牌 → 409", vhUpdDup.status === 409, String(vhUpdDup.status));
+const vhUpdMissing = await call("PUT", "/api/admin/vehicles/999999", { token: adminToken, body: { smsEnabled: true } });
+ok("编辑不存在车辆 → 404", vhUpdMissing.status === 404, String(vhUpdMissing.status));
+
+// 取 ownerToken 跳转车主后台
+const vhTok = await call("GET", `/api/admin/vehicles/${vhAId}/owner-token`, { token: adminToken });
+ok("取到 ownerToken", vhTok.status === 200 && String(vhTok.data?.ownerToken || "").startsWith("own_"), JSON.stringify(vhTok.data));
+const enterOwner = await call("GET", `/api/owner/${vhTok.data.ownerToken}/vehicle`);
+ok("该 ownerToken 可直接进车主后台", enterOwner.status === 200 && enterOwner.data?.plateNumber === `沪B${stamp}9`, JSON.stringify(enterOwner.data));
+
+// 导入
+const importRes = await call("POST", "/api/admin/vehicles/import", {
+  token: adminToken,
+  body: {
+    items: [
+      { plateNumber: `京A${stamp}1`, ownerPhone: "13800001111", ownerPin: "1122" },
+      { plateNumber: `京A${stamp}2`, ownerPhone: "13800002222", smsEnabled: true },
+      { plateNumber: `京A${stamp}1` },          // 重复
+      { plateNumber: "bad!!" },                  // 非法车牌
+      { plateNumber: `京A${stamp}3`, ownerPin: "1" }, // 非法密码
+    ],
+  },
+});
+ok("导入接口 200", importRes.status === 200, JSON.stringify(importRes.data).slice(0, 160));
+ok("导入成功 2 条", (importRes.data?.created || []).length === 2, JSON.stringify(importRes.data?.created));
+ok("重复跳过 1 条", (importRes.data?.skipped || []).length === 1, JSON.stringify(importRes.data?.skipped));
+ok("失败 2 条（车牌非法 + 密码非法）", (importRes.data?.failed || []).length === 2, JSON.stringify(importRes.data?.failed));
+const importEmpty = await call("POST", "/api/admin/vehicles/import", { token: adminToken, body: { items: [] } });
+ok("空导入被拒", importEmpty.status === 400, String(importEmpty.status));
+
+// 导出
+const exp = await call("GET", "/api/admin/vehicles/export", { token: adminToken });
+ok("导出 200", exp.status === 200, String(exp.status));
+ok("导出含新增车牌", (exp.data?.vehicles || []).some((v) => v.plateNumber === `京A${stamp}1`), JSON.stringify(exp.data?.vehicles || []).slice(0, 160));
+ok("导出含明文手机号", (exp.data?.vehicles || []).some((v) => v.ownerPhone === "13800001111"));
+
+// 删除
+const vhDel = await call("DELETE", `/api/admin/vehicles/${vhBId}`, { token: adminToken });
+ok("删除车牌", vhDel.status === 200, JSON.stringify(vhDel.data));
+const vhDelAgain = await call("DELETE", `/api/admin/vehicles/${vhBId}`, { token: adminToken });
+ok("重复删除 → 404", vhDelAgain.status === 404, String(vhDelAgain.status));
+
 console.log("\n=== 11. 访客通道解析（混合模型） ===");
 // 步骤 3 已关闭短信，这里重新开启，验证「车主开关 + 全局密钥」组合生效
 const reEnable = await call("PATCH", `/api/owner/${ownerToken}/vehicle`, { body: { smsEnabled: true } });
@@ -196,9 +298,40 @@ ok("登出 200", logout.status === 200);
 const afterLogout = await call("GET", "/api/admin/config", { token: adminToken });
 ok("登出后 → 401", afterLogout.status === 401, String(afterLogout.status));
 
+console.log("\n=== 12.5 管理员修改自己的密码 ===");
+const reLogin = await call("POST", "/api/admin/login", { body: { username: "admin", password: "MoveCar@2026" } });
+ok("重新登录取得会话", reLogin.status === 200 && Boolean(reLogin.data?.token), JSON.stringify(reLogin.data));
+const pwTok = reLogin.data.token;
+const pwWrongCur = await call("POST", "/api/admin/password", { token: pwTok, body: { currentPassword: "wrong-one", newPassword: "NewSecret123" } });
+ok("当前密码错误被拒", pwWrongCur.status === 400, String(pwWrongCur.status));
+const pwWeak = await call("POST", "/api/admin/password", { token: pwTok, body: { currentPassword: "MoveCar@2026", newPassword: "123" } });
+ok("新密码过短被拒", pwWeak.status === 400, String(pwWeak.status));
+const pwNoAuth = await call("POST", "/api/admin/password", { body: { currentPassword: "MoveCar@2026", newPassword: "NewSecret123" } });
+ok("未授权改密 → 401", pwNoAuth.status === 401, String(pwNoAuth.status));
+
+const pwOk = await call("POST", "/api/admin/password", { token: pwTok, body: { currentPassword: "MoveCar@2026", newPassword: "NewSecret123" } });
+ok("改密成功", pwOk.status === 200, JSON.stringify(pwOk.data));
+const pwOldTok = await call("GET", "/api/admin/config", { token: pwTok });
+ok("改密后旧会话失效 → 401", pwOldTok.status === 401, String(pwOldTok.status));
+const loginOldPw = await call("POST", "/api/admin/login", { body: { username: "admin", password: "MoveCar@2026" } });
+ok("旧密码无法登录 → 401", loginOldPw.status === 401, String(loginOldPw.status));
+const loginNewPw = await call("POST", "/api/admin/login", { body: { username: "admin", password: "NewSecret123" } });
+ok("新密码可登录", loginNewPw.status === 200 && Boolean(loginNewPw.data?.token), JSON.stringify(loginNewPw.data));
+
+// 还原密码，保证脚本可重复运行
+const pwRestore = await call("POST", "/api/admin/password", { token: loginNewPw.data.token, body: { currentPassword: "NewSecret123", newPassword: "MoveCar@2026" } });
+ok("还原初始密码", pwRestore.status === 200, JSON.stringify(pwRestore.data));
+const loginRestored = await call("POST", "/api/admin/login", { body: { username: "admin", password: "MoveCar@2026" } });
+ok("还原后可登录", loginRestored.status === 200);
+
 console.log("\n=== 13. 清理 ===");
 const del2 = await call("DELETE", `/api/owner/${ownerToken}/vehicle`);
 ok("删除车辆", del2.status === 200, JSON.stringify(del2.data));
+const cleanupTok = loginRestored.data.token;
+const allVh = await call("GET", "/api/admin/vehicles", { token: cleanupTok });
+const cleanupIds = (allVh.data?.vehicles || []).map((v) => v.id);
+for (const id of cleanupIds) await call("DELETE", `/api/admin/vehicles/${id}`, { token: cleanupTok });
+ok(`清理测试车牌 ${cleanupIds.length} 条`, cleanupIds.length >= 0);
 
 console.log(`\n===== 结果：${pass} 通过 / ${fail} 失败 =====\n`);
 process.exit(fail ? 1 : 0);

@@ -99,6 +99,15 @@ function matchRoute(method, pathname) {
     ["POST", /^\/api\/admin\/ads$/, handleAdminAdsCreate, [], "admin"],
     ["PUT", /^\/api\/admin\/ads\/(\d+)$/, handleAdminAdsUpdate, ["id"], "admin"],
     ["DELETE", /^\/api\/admin\/ads\/(\d+)$/, handleAdminAdsDelete, ["id"], "admin"],
+    // 超级管理员：车牌（车辆绑定）管理
+    ["GET", /^\/api\/admin\/vehicles$/, handleAdminVehiclesList, [], "admin"],
+    ["POST", /^\/api\/admin\/vehicles$/, handleAdminVehicleCreate, [], "admin"],
+    ["GET", /^\/api\/admin\/vehicles\/export$/, handleAdminVehicleExport, [], "admin"],
+    ["POST", /^\/api\/admin\/vehicles\/import$/, handleAdminVehicleImport, [], "admin"],
+    ["PUT", /^\/api\/admin\/vehicles\/(\d+)$/, handleAdminVehicleUpdate, ["id"], "admin"],
+    ["DELETE", /^\/api\/admin\/vehicles\/(\d+)$/, handleAdminVehicleDelete, ["id"], "admin"],
+    ["GET", /^\/api\/admin\/vehicles\/(\d+)\/owner-token$/, handleAdminVehicleOwnerToken, ["id"], "admin"],
+    ["POST", /^\/api\/admin\/password$/, handleAdminPasswordChange, [], "admin"],
   ];
   for (const [routeMethod, pattern, handler, keys = [], guard] of routes) {
     const match = pathname.match(pattern);
@@ -238,44 +247,49 @@ function validateOcrImage(image, env) {
 async function handleCreateVehicle({ request, env }) {
   assertConfig(env, ["DB", "DATA_ENCRYPTION_KEY"]);
   const input = await readJson(request);
-  const plateNumber = normalizePlate(input.plateNumber);
   const validationError = validateVehicleInput(input, { requireNotification: true });
   if (validationError) return json(validationError, 400);
+  const created = await insertVehicleRecord(env, input);
+  return json({ vehicleToken: created.vehicleToken, ownerToken: created.ownerToken, maskedPlate: created.maskedPlate }, 201);
+}
 
+// 车主创建 / 管理员新增 / 批量导入 共用的写入逻辑
+async function insertVehicleRecord(env, input) {
+  const plateNumber = normalizePlate(input.plateNumber);
   const vehicleToken = await token("veh");
   const ownerToken = await token("own");
   const now = nowIso();
-  const encryptedPhone = input.ownerPhone ? await encryptText(env, normalizePhone(input.ownerPhone)) : null;
-  const encryptedShowdocToken = input.showdocToken ? await encryptText(env, input.showdocToken) : null;
-  const encryptedWechatWorkWebhook = input.wechatWorkWebhook ? await encryptText(env, normalizeHttpUrl(input.wechatWorkWebhook)) : null;
-  const ownerPinHash = input.ownerPin ? await sha256Hex(`pin:${input.ownerPin}`) : null;
-
-  await env.DB.prepare(
+  const res = await env.DB.prepare(
     `INSERT INTO vehicles (
-      vehicle_token, owner_token, plate_number_masked, plate_number_hash,
+      vehicle_token, owner_token, plate_number_masked, plate_number_hash, plate_number_encrypted,
       owner_phone_encrypted, showdoc_webhook, showdoc_token_encrypted,
       wechat_work_webhook_encrypted, sms_enabled, privacy_call_enabled, owner_pin_hash,
       created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   )
     .bind(
       vehicleToken,
       ownerToken,
       maskPlate(plateNumber),
       await sha256Hex(plateNumber),
-      encryptedPhone,
+      await encryptText(env, plateNumber),
+      input.ownerPhone ? await encryptText(env, normalizePhone(input.ownerPhone)) : null,
       input.showdocWebhook ? normalizeHttpUrl(input.showdocWebhook) : "",
-      encryptedShowdocToken,
-      encryptedWechatWorkWebhook,
+      input.showdocToken ? await encryptText(env, input.showdocToken) : null,
+      input.wechatWorkWebhook ? await encryptText(env, normalizeHttpUrl(input.wechatWorkWebhook)) : null,
       input.smsEnabled ? 1 : 0,
       input.privacyCallEnabled ? 1 : 0,
-      ownerPinHash,
+      input.ownerPin ? await sha256Hex(`pin:${input.ownerPin}`) : null,
       now,
       now
     )
     .run();
-
-  return json({ vehicleToken, ownerToken, maskedPlate: maskPlate(plateNumber) }, 201);
+  return {
+    id: res.meta?.last_row_id ?? null,
+    vehicleToken,
+    ownerToken,
+    maskedPlate: maskPlate(plateNumber),
+  };
 }
 
 /* ============================================================
@@ -470,15 +484,20 @@ async function handleOwnerVehicle({ env, params }) {
   // 回填当前配置（车主本人可见自己的配置），修复「改了不生效 / 打开时开关被重置」的问题
   let wechatWorkWebhook = "";
   let ownerPhoneMasked = "";
+  let plateNumber = "";
   try {
     if (vehicle.wechat_work_webhook_encrypted) wechatWorkWebhook = await decryptText(env, vehicle.wechat_work_webhook_encrypted);
   } catch {}
   try {
     if (vehicle.owner_phone_encrypted) ownerPhoneMasked = maskPhone(await decryptText(env, vehicle.owner_phone_encrypted));
   } catch {}
+  try {
+    if (vehicle.plate_number_encrypted) plateNumber = await decryptText(env, vehicle.plate_number_encrypted);
+  } catch {}
   return json({
     vehicleToken: vehicle.vehicle_token,
     maskedPlate: vehicle.plate_number_masked,
+    plateNumber: plateNumber || vehicle.plate_number_masked,
     showdocEnabled: Boolean(vehicle.showdoc_webhook),
     wechatWorkEnabled: Boolean(vehicle.wechat_work_webhook_encrypted),
     smsEnabled: Boolean(vehicle.sms_enabled),
@@ -561,7 +580,7 @@ async function handleRecoverOwner({ request, env }) {
   assertConfig(env, ["DB", "DATA_ENCRYPTION_KEY"]);
   const input = await readJson(request);
   const plate = normalizePlate(input.plateNumber);
-  if (!/^[\u4e00-\u9fa5A-Z0-9]{5,10}$/.test(plate)) return json({ error: "invalid_plate", message: "请填写有效车牌号。" }, 400);
+  if (!isPlate(plate)) return json({ error: "invalid_plate", message: "请填写有效车牌号。" }, 400);
   if (!input.ownerPin) return json({ error: "missing_pin", message: "请填写管理密码。" }, 400);
 
   const ipHash = await visitorIpHash(request, env);
@@ -813,6 +832,213 @@ function validateAdInput(input) {
 }
 
 /* ============================================================
+   超级管理员：车牌（车辆绑定）管理
+   ============================================================ */
+// 后台展示用的车辆视图（解密车牌/手机号/企业微信 Webhook）
+async function adminVehicleView(env, v) {
+  let plateNumber = v.plate_number_masked;
+  let ownerPhone = "";
+  let wechatWorkWebhook = "";
+  try { if (v.plate_number_encrypted) plateNumber = await decryptText(env, v.plate_number_encrypted); } catch {}
+  try { if (v.owner_phone_encrypted) ownerPhone = await decryptText(env, v.owner_phone_encrypted); } catch {}
+  try { if (v.wechat_work_webhook_encrypted) wechatWorkWebhook = await decryptText(env, v.wechat_work_webhook_encrypted); } catch {}
+  return {
+    id: v.id,
+    plateNumber,
+    maskedPlate: v.plate_number_masked,
+    plateMissing: !v.plate_number_encrypted,
+    ownerPhone,
+    wechatWorkWebhook,
+    showdocWebhook: v.showdoc_webhook || "",
+    hasShowdocToken: Boolean(v.showdoc_token_encrypted),
+    smsEnabled: Boolean(v.sms_enabled),
+    privacyCallEnabled: Boolean(v.privacy_call_enabled),
+    hasPin: Boolean(v.owner_pin_hash),
+    vehicleToken: v.vehicle_token,
+    createdAt: v.created_at,
+    updatedAt: v.updated_at,
+  };
+}
+
+async function handleAdminVehiclesList({ env, url }) {
+  assertConfig(env, ["DB", "DATA_ENCRYPTION_KEY"]);
+  const q = String(url.searchParams.get("q") || "").trim();
+  const limit = Math.min(Number(url.searchParams.get("limit")) || 200, 1000);
+  const rows = await env.DB.prepare("SELECT * FROM vehicles ORDER BY id DESC LIMIT ?").bind(limit).all();
+  const list = [];
+  for (const v of rows.results || []) list.push(await adminVehicleView(env, v));
+  let filtered = list;
+  if (q) {
+    const qq = q.toLowerCase();
+    filtered = list.filter(
+      (v) =>
+        String(v.plateNumber || "").toLowerCase().includes(qq) ||
+        String(v.maskedPlate || "").toLowerCase().includes(qq) ||
+        String(v.ownerPhone || "").includes(q) ||
+        String(v.id) === q
+    );
+    // 老数据可能超出 limit，用哈希做一次精确补齐
+    const plate = normalizePlate(q);
+    if (isPlate(plate)) {
+      const hit = await env.DB.prepare("SELECT * FROM vehicles WHERE plate_number_hash = ?").bind(await sha256Hex(plate)).first();
+      if (hit && !filtered.some((x) => x.id === hit.id)) filtered.unshift(await adminVehicleView(env, hit));
+    }
+  }
+  return json({ vehicles: filtered, total: filtered.length, scanned: list.length });
+}
+
+async function handleAdminVehicleCreate({ request, env }) {
+  assertConfig(env, ["DB", "DATA_ENCRYPTION_KEY"]);
+  const input = await readJson(request);
+  const plate = normalizePlate(input.plateNumber);
+  if (!isPlate(plate)) return json({ error: "invalid_plate", message: "请填写有效车牌号。" }, 400);
+  if (input.ownerPhone && !isPhone(input.ownerPhone)) return json({ error: "invalid_phone", message: "手机号格式不正确。" }, 400);
+  if (input.ownerPin && !isPin(input.ownerPin)) return json({ error: "invalid_pin", message: "管理密码需为 4-12 位数字。" }, 400);
+  if (input.wechatWorkWebhook && !isHttpUrl(input.wechatWorkWebhook)) return json({ error: "invalid_wechat_work_webhook", message: "企业微信 Webhook 必须是 http 或 https 地址。" }, 400);
+  if (input.showdocWebhook && !isHttpUrl(input.showdocWebhook)) return json({ error: "invalid_showdoc_webhook", message: "ShowDoc Webhook 必须是 http 或 https 地址。" }, 400);
+  const dup = await env.DB.prepare("SELECT id FROM vehicles WHERE plate_number_hash = ?").bind(await sha256Hex(plate)).first();
+  if (dup) return json({ error: "duplicate_plate", message: `车牌 ${plate} 已存在绑定（#${dup.id}），请直接编辑该记录。` }, 409);
+  const created = await insertVehicleRecord(env, { ...input, plateNumber: plate });
+  return json({ message: `已新增 ${plate} 的挪车码绑定。`, ...created }, 201);
+}
+
+async function handleAdminVehicleUpdate({ request, env, params }) {
+  assertConfig(env, ["DB", "DATA_ENCRYPTION_KEY"]);
+  const id = Number(params.id);
+  const vehicle = await env.DB.prepare("SELECT * FROM vehicles WHERE id = ?").bind(id).first();
+  if (!vehicle) return json({ error: "not_found", message: "车辆不存在。" }, 404);
+  const input = await readJson(request);
+  const updates = [];
+  const values = [];
+
+  if ("plateNumber" in input) {
+    const plate = normalizePlate(input.plateNumber);
+    if (!isPlate(plate)) return json({ error: "invalid_plate", message: "请填写有效车牌号。" }, 400);
+    const hash = await sha256Hex(plate);
+    const dup = await env.DB.prepare("SELECT id FROM vehicles WHERE plate_number_hash = ? AND id <> ?").bind(hash, id).first();
+    if (dup) return json({ error: "duplicate_plate", message: `车牌 ${plate} 已被其它绑定占用（#${dup.id}）。` }, 409);
+    updates.push("plate_number_hash = ?", "plate_number_masked = ?", "plate_number_encrypted = ?");
+    values.push(hash, maskPlate(plate), await encryptText(env, plate));
+  }
+  if ("ownerPhone" in input) {
+    if (input.ownerPhone) {
+      if (!isPhone(input.ownerPhone)) return json({ error: "invalid_phone", message: "手机号格式不正确。" }, 400);
+      updates.push("owner_phone_encrypted = ?"); values.push(await encryptText(env, normalizePhone(input.ownerPhone)));
+    } else { updates.push("owner_phone_encrypted = ?"); values.push(null); }
+  }
+  if ("wechatWorkWebhook" in input) {
+    if (input.wechatWorkWebhook) {
+      if (!isHttpUrl(input.wechatWorkWebhook)) return json({ error: "invalid_wechat_work_webhook", message: "企业微信 Webhook 必须是 http 或 https 地址。" }, 400);
+      updates.push("wechat_work_webhook_encrypted = ?"); values.push(await encryptText(env, normalizeHttpUrl(input.wechatWorkWebhook)));
+    } else { updates.push("wechat_work_webhook_encrypted = ?"); values.push(null); }
+  }
+  if ("showdocWebhook" in input) {
+    if (input.showdocWebhook) {
+      if (!isHttpUrl(input.showdocWebhook)) return json({ error: "invalid_showdoc_webhook", message: "ShowDoc Webhook 必须是 http 或 https 地址。" }, 400);
+      updates.push("showdoc_webhook = ?"); values.push(normalizeHttpUrl(input.showdocWebhook));
+    } else { updates.push("showdoc_webhook = ?"); values.push(""); }
+  }
+  if ("showdocToken" in input) {
+    if (input.showdocToken) { updates.push("showdoc_token_encrypted = ?"); values.push(await encryptText(env, input.showdocToken)); }
+    else { updates.push("showdoc_token_encrypted = ?"); values.push(null); }
+  }
+  if (typeof input.smsEnabled === "boolean") { updates.push("sms_enabled = ?"); values.push(input.smsEnabled ? 1 : 0); }
+  if (typeof input.privacyCallEnabled === "boolean") { updates.push("privacy_call_enabled = ?"); values.push(input.privacyCallEnabled ? 1 : 0); }
+  if ("ownerPin" in input) {
+    if (!input.ownerPin) { updates.push("owner_pin_hash = ?"); values.push(null); }
+    else {
+      if (!isPin(input.ownerPin)) return json({ error: "invalid_pin", message: "管理密码需为 4-12 位数字。" }, 400);
+      updates.push("owner_pin_hash = ?"); values.push(await sha256Hex(`pin:${input.ownerPin}`));
+    }
+  }
+  if (!updates.length) return json({ message: "没有需要更新的字段。" });
+  updates.push("updated_at = ?");
+  values.push(nowIso(), id);
+  await env.DB.prepare(`UPDATE vehicles SET ${updates.join(", ")} WHERE id = ?`).bind(...values).run();
+  return json({ message: "车辆信息已更新。" });
+}
+
+async function handleAdminVehicleDelete({ env, params }) {
+  assertConfig(env, ["DB"]);
+  const id = Number(params.id);
+  const vehicle = await env.DB.prepare("SELECT id FROM vehicles WHERE id = ?").bind(id).first();
+  if (!vehicle) return json({ error: "not_found", message: "车辆不存在。" }, 404);
+  await env.DB.prepare("DELETE FROM notification_logs WHERE vehicle_id = ?").bind(id).run();
+  await env.DB.prepare("DELETE FROM vehicles WHERE id = ?").bind(id).run();
+  return json({ message: "该车牌绑定已删除。" });
+}
+
+async function handleAdminVehicleOwnerToken({ env, params }) {
+  assertConfig(env, ["DB"]);
+  const v = await env.DB.prepare("SELECT id, owner_token, plate_number_masked FROM vehicles WHERE id = ?").bind(Number(params.id)).first();
+  if (!v) return json({ error: "not_found", message: "车辆不存在。" }, 404);
+  return json({ ownerToken: v.owner_token, maskedPlate: v.plate_number_masked });
+}
+
+async function handleAdminVehicleImport({ request, env }) {
+  assertConfig(env, ["DB", "DATA_ENCRYPTION_KEY"]);
+  const input = await readJson(request);
+  const items = Array.isArray(input.items) ? input.items : [];
+  if (!items.length) return json({ error: "empty_import", message: "没有可导入的数据。" }, 400);
+  if (items.length > 500) return json({ error: "too_many", message: "单次最多导入 500 条。" }, 400);
+  const created = [];
+  const skipped = [];
+  const failed = [];
+  for (const item of items) {
+    const plate = normalizePlate(item.plateNumber);
+    if (!isPlate(plate)) { failed.push({ plateNumber: String(item.plateNumber || ""), reason: "车牌格式无效" }); continue; }
+    const dup = await env.DB.prepare("SELECT id FROM vehicles WHERE plate_number_hash = ?").bind(await sha256Hex(plate)).first();
+    if (dup) { skipped.push(plate); continue; }
+    if (item.ownerPhone && !isPhone(item.ownerPhone)) { failed.push({ plateNumber: plate, reason: "手机号格式不正确" }); continue; }
+    if (item.ownerPin && !isPin(item.ownerPin)) { failed.push({ plateNumber: plate, reason: "管理密码需 4-12 位数字" }); continue; }
+    if (item.wechatWorkWebhook && !isHttpUrl(item.wechatWorkWebhook)) { failed.push({ plateNumber: plate, reason: "企业微信 Webhook 非法" }); continue; }
+    if (item.showdocWebhook && !isHttpUrl(item.showdocWebhook)) { failed.push({ plateNumber: plate, reason: "ShowDoc Webhook 非法" }); continue; }
+    try {
+      await insertVehicleRecord(env, { ...item, plateNumber: plate });
+      created.push(plate);
+    } catch (error) {
+      failed.push({ plateNumber: plate, reason: String(error.message || error).slice(0, 120) });
+    }
+  }
+  return json({
+    message: `导入完成：成功 ${created.length} 条，跳过重复 ${skipped.length} 条，失败 ${failed.length} 条。`,
+    created,
+    skipped,
+    failed,
+  });
+}
+
+async function handleAdminVehicleExport({ env }) {
+  assertConfig(env, ["DB", "DATA_ENCRYPTION_KEY"]);
+  const rows = await env.DB.prepare("SELECT * FROM vehicles ORDER BY id ASC LIMIT 2000").all();
+  const vehicles = [];
+  for (const v of rows.results || []) vehicles.push(await adminVehicleView(env, v));
+  return json({ vehicles, exportedAt: nowIso(), count: vehicles.length });
+}
+
+/* ============================================================
+   超级管理员：修改自己的登录密码
+   ============================================================ */
+async function handleAdminPasswordChange({ request, env, admin }) {
+  assertConfig(env, ["DB"]);
+  const input = await readJson(request);
+  const current = String(input.currentPassword || "");
+  const next = String(input.newPassword || "");
+  if (next.length < 8) return json({ error: "weak_password", message: "新密码至少 8 位。" }, 400);
+  const row = await env.DB.prepare("SELECT * FROM admins WHERE username = ?").bind(admin).first();
+  if (!row) return json({ error: "not_found", message: "账号不存在。" }, 404);
+  if (!(await verifyPassword(current, row.salt, row.password_hash))) {
+    return json({ error: "invalid_password", message: "当前密码不正确。" }, 400);
+  }
+  const salt = bytesToBase64Url(crypto.getRandomValues(new Uint8Array(16)));
+  const hash = await sha256Hex(`${salt}:${next}`);
+  await env.DB.prepare("UPDATE admins SET password_hash = ?, salt = ? WHERE username = ?").bind(hash, salt, admin).run();
+  // 改密后强制所有会话失效（含当前会话），前端需重新登录
+  await env.DB.prepare("DELETE FROM admin_sessions WHERE username = ?").bind(admin).run();
+  return json({ message: "密码已修改，请使用新密码重新登录。" });
+}
+
+/* ============================================================
    数据读取 / 通道解析
    ============================================================ */
 async function getVehicleByToken(env, vehicleToken) {
@@ -914,7 +1140,8 @@ function validateVehicleInput(input, { requireNotification = false, partial = fa
     return null;
   }
   const plate = normalizePlate(input.plateNumber);
-  if (!/^[\u4e00-\u9fa5A-Z0-9]{5,10}$/.test(plate)) return { error: "invalid_plate", message: "请填写有效车牌号。" };
+  if (!isPlate(plate)) return { error: "invalid_plate", message: "请填写有效车牌号。" };
+  if (input.ownerPin && !isPin(input.ownerPin)) return { error: "invalid_pin", message: "管理密码需为 4-12 位数字。" };
   if (requireNotification && !input.showdocWebhook && !input.wechatWorkWebhook && !input.smsEnabled && !input.privacyCallEnabled) {
     return { error: "missing_notification_channel", message: "请至少配置 ShowDoc、微信、短信或隐私号中的一种通知方式。" };
   }
@@ -931,6 +1158,8 @@ function isHttpUrl(value) {
   try { const url = new URL(String(value || "").trim()); return ["http:", "https:"].includes(url.protocol); } catch { return false; }
 }
 function isPhone(value) { return /^\+?\d[\d\s-]{6,19}$/.test(String(value || "").trim()); }
+function isPlate(value) { return /^[\u4e00-\u9fa5A-Z0-9]{5,10}$/.test(String(value || "").trim()); }
+function isPin(value) { return /^\d{4,12}$/.test(String(value || "").trim()); }
 function maskPlate(value) {
   const plate = normalizePlate(value);
   if (plate.length <= 3) return "***";
