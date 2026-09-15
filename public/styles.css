@@ -43,9 +43,12 @@
 
 * { box-sizing: border-box; }
 
+img { max-width: 100%; }
+
 html, body { margin: 0; padding: 0; }
 
 body {
+  overflow-x: hidden;
   font-family: var(--font);
   color: var(--text);
   background:
@@ -197,7 +200,8 @@ h2 { font-size: 17px; margin: 0 0 14px; font-weight: 700; }
 /* ---------- 表单 ---------- */
 .grid-form { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 label { display: flex; flex-direction: column; gap: 6px; font-size: 13.5px; font-weight: 600; color: var(--text-soft); }
-label.span-2 { grid-column: 1 / -1; }
+label.span-2,
+.grid-form > .span-2 { grid-column: 1 / -1; }
 input, textarea, select {
   font-family: inherit;
   font-size: 15px;
@@ -352,12 +356,13 @@ textarea { resize: vertical; min-height: 84px; }
 .tip-body span { display: block; font-size: 12.5px; color: var(--text-mute); margin-top: 2px; }
 
 /* ---------- 广告位 ---------- */
-.ad-slot { margin: 0 0 14px; }
+.ad-slot { margin: 0 0 14px; max-width: 100%; }
 .ad-slot.hidden { display: none; }
-.ad-list { display: flex; flex-direction: column; gap: 10px; }
-.ad-item { display: block; border-radius: var(--radius); overflow: hidden; }
+.ad-list { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.ad-item { display: block; border-radius: var(--radius); overflow: hidden; min-width: 0; max-width: 100%; }
 .ad-item img {
-  width: 100%; display: block; border-radius: var(--radius);
+  width: 100%; max-width: 100%; height: auto; display: block;
+  border-radius: var(--radius);
   border: 1px solid var(--border);
   box-shadow: var(--shadow-sm);
 }
