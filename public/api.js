@@ -160,6 +160,34 @@ export const api = {
     request(`/api/admin/lookup?plate=${encodeURIComponent(plate)}`, {
       headers: { "X-Admin-Token": token },
     }),
+
+  // 广告位：公开读取（仅已启用）
+  listAds: (position) =>
+    request(`/api/ads${position ? `?position=${encodeURIComponent(position)}` : ""}`),
+
+  // 广告位：管理员
+  adminListAds: (token) =>
+    request("/api/admin/ads", { headers: { "X-Admin-Token": token } }),
+
+  adminCreateAd: (token, payload) =>
+    request("/api/admin/ads", {
+      method: "POST",
+      headers: { "X-Admin-Token": token },
+      body: payload,
+    }),
+
+  adminUpdateAd: (token, id, payload) =>
+    request(`/api/admin/ads/${encodeURIComponent(id)}`, {
+      method: "PUT",
+      headers: { "X-Admin-Token": token },
+      body: payload,
+    }),
+
+  adminDeleteAd: (token, id) =>
+    request(`/api/admin/ads/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+      headers: { "X-Admin-Token": token },
+    }),
 };
 
 // 生成访客页链接（基于当前前端所在域名，与后端地址解耦）

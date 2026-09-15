@@ -11,25 +11,57 @@
   <body data-page="move">
     <header class="topbar">
       <a class="brand" href="./index.html"><span class="logo">🚗</span>扫码挪车</a>
-      <nav><a href="./privacy.html">隐私</a></nav>
+      <nav>
+        <a href="./index.html">生成</a>
+        <a href="./privacy.html">隐私</a>
+      </nav>
     </header>
 
     <main class="shell compact">
-      <section class="panel" id="publicVehicle">
-        <div class="hero-plate"><div class="muted">正在读取二维码信息…</div></div>
+      <section class="hero-banner fade-in">
+        <div class="hb-left">
+          <div class="hb-brand">🚗 扫码挪车</div>
+          <h1 class="hb-title">欢迎使用<br /><em>挪车码</em></h1>
+          <div class="hb-checks">
+            <span>匿名通知车主</span>
+            <span>保护双方隐私</span>
+          </div>
+        </div>
+        <div class="hb-art">🚙</div>
       </section>
 
-      <section class="panel" id="contactPanel">
-        <h2>通知车主挪车</h2>
-        <p class="muted">选择通知方式（默认已为你选好），点击下方按钮即可匿名提醒车主。</p>
-        <div id="channelPicker" style="margin:10px 0 4px"></div>
+      <div class="ad-slot hidden" data-ad-position="move_top"></div>
+
+      <section class="card plate-check fade-in">
+        <div class="check-divider">请核对呼叫车辆车牌号</div>
+        <div id="publicVehicle">
+          <div class="plate-big">······</div>
+          <p class="privacy-note">正在读取二维码信息…</p>
+        </div>
+        <div id="channelPicker"></div>
         <div class="actions">
-          <button class="btn btn-primary cta" id="notifyButton" disabled>
-            通知车主挪车<span class="sub">匿名发送，不暴露你的身份</span>
+          <button class="btn btn-primary cta-lg" id="notifyButton" disabled>
+            呼叫车主（加密）
           </button>
         </div>
         <div id="contactResult" class="result hidden" style="margin-top:12px"></div>
       </section>
+
+      <div class="ad-slot hidden" data-ad-position="move_bottom"></div>
+
+      <section class="card">
+        <div class="service-grid">
+          <a class="service-item" href="./setup.html"><span class="service-ic">📖</span><span>使用说明</span></a>
+          <a class="service-item" href="./privacy.html"><span class="service-ic">🔒</span><span>隐私保护</span></a>
+          <a class="service-item" href="./demo.html"><span class="service-ic">▶️</span><span>流程演示</span></a>
+          <a class="service-item" href="./owner.html"><span class="service-ic">📊</span><span>车主后台</span></a>
+        </div>
+      </section>
+
+      <footer class="site-footer">
+        <span class="fb"><i>🚗</i>扫码挪车</span>
+        <p>匿名通知 · 不暴露双方真实号码</p>
+      </footer>
     </main>
 
     <script src="./app.js" type="module"></script>

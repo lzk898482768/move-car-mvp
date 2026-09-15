@@ -128,6 +128,58 @@ ok("删除管理员", del.status === 200, JSON.stringify(del.data));
 const weak = await call("POST", "/api/admin/accounts", { token: adminToken, body: { username: `w${stamp}`, password: "123" } });
 ok("弱密码被拒", weak.status === 400, String(weak.status));
 
+console.log("\n=== 10.5 广告位（后台配置图片链接 + 公开读取） ===");
+const adNoAuth = await call("GET", "/api/admin/ads");
+ok("未授权读广告列表 → 401", adNoAuth.status === 401, String(adNoAuth.status));
+const adNoAuthCreate = await call("POST", "/api/admin/ads", { body: { position: "move_top", imageUrl: "https://example.com/a.png" } });
+ok("未授权创建广告 → 401", adNoAuthCreate.status === 401, String(adNoAuthCreate.status));
+
+const adBadPos = await call("POST", "/api/admin/ads", { token: adminToken, body: { position: "nope", imageUrl: "https://example.com/a.png" } });
+ok("非法广告位被拒", adBadPos.status === 400, String(adBadPos.status));
+const adNoImg = await call("POST", "/api/admin/ads", { token: adminToken, body: { position: "move_top" } });
+ok("缺图片链接被拒", adNoImg.status === 400, String(adNoImg.status));
+const adBadImg = await call("POST", "/api/admin/ads", { token: adminToken, body: { position: "move_top", imageUrl: "not-a-url" } });
+ok("非法图片链接被拒", adBadImg.status === 400, String(adBadImg.status));
+
+const adCreated = await call("POST", "/api/admin/ads", {
+  token: adminToken,
+  body: { position: "move_top", imageUrl: "https://example.com/banner.png", linkUrl: "https://example.com/landing", title: "测试横幅", sortOrder: 1 },
+});
+ok("创建广告 201", adCreated.status === 201, JSON.stringify(adCreated.data));
+const adId = adCreated.data?.id;
+ok("返回广告 id", Boolean(adId));
+
+const adList = await call("GET", "/api/admin/ads", { token: adminToken });
+ok("后台列表含广告位定义", (adList.data?.positions || []).length >= 4, JSON.stringify(adList.data?.positions));
+ok("后台列表含新广告", (adList.data?.ads || []).some((a) => a.id === adId));
+
+const pubAds = await call("GET", "/api/ads?position=move_top");
+ok("公开接口返回该位置广告", (pubAds.data?.ads || []).length === 1 && pubAds.data.ads[0].id === adId, JSON.stringify(pubAds.data));
+const pubAdsOther = await call("GET", "/api/ads?position=home_top");
+ok("其它位置为空", (pubAdsOther.data?.ads || []).length === 0, JSON.stringify(pubAdsOther.data));
+const pubAdsAll = await call("GET", "/api/ads");
+ok("不带位置返回全部启用广告", (pubAdsAll.data?.ads || []).length === 1);
+
+const adUpd = await call("PUT", `/api/admin/ads/${adId}`, { token: adminToken, body: { title: "改过的横幅", sortOrder: 9 } });
+ok("更新广告", adUpd.status === 200, JSON.stringify(adUpd.data));
+const pubAds2 = await call("GET", "/api/ads?position=move_top");
+ok("更新已生效", pubAds2.data?.ads?.[0]?.title === "改过的横幅" && pubAds2.data.ads[0].sort_order === 9, JSON.stringify(pubAds2.data));
+
+const adOff = await call("PUT", `/api/admin/ads/${adId}`, { token: adminToken, body: { enabled: false } });
+ok("停用广告", adOff.status === 200);
+const pubAds3 = await call("GET", "/api/ads?position=move_top");
+ok("停用后公开接口不再返回", (pubAds3.data?.ads || []).length === 0, JSON.stringify(pubAds3.data));
+
+const adUpdMissing = await call("PUT", "/api/admin/ads/999999", { token: adminToken, body: { title: "x" } });
+ok("更新不存在的广告 → 404", adUpdMissing.status === 404, String(adUpdMissing.status));
+
+const adDel = await call("DELETE", `/api/admin/ads/${adId}`, { token: adminToken });
+ok("删除广告", adDel.status === 200, JSON.stringify(adDel.data));
+const adDelAgain = await call("DELETE", `/api/admin/ads/${adId}`, { token: adminToken });
+ok("重复删除 → 404", adDelAgain.status === 404, String(adDelAgain.status));
+const pubAds4 = await call("GET", "/api/ads?position=move_top");
+ok("删除后公开接口为空", (pubAds4.data?.ads || []).length === 0);
+
 console.log("\n=== 11. 访客通道解析（混合模型） ===");
 // 步骤 3 已关闭短信，这里重新开启，验证「车主开关 + 全局密钥」组合生效
 const reEnable = await call("PATCH", `/api/owner/${ownerToken}/vehicle`, { body: { smsEnabled: true } });

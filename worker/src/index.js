@@ -32,6 +32,15 @@ const GLOBAL_SETTINGS = [
 ];
 const SETTING_MAP = Object.fromEntries(GLOBAL_SETTINGS.map((s) => [s.key, s]));
 
+// 广告位定义：后台可选的投放位置。仅存图片链接，不做图片上传。
+const AD_POSITIONS = [
+  { key: "home_top", label: "首页 · 顶部横幅" },
+  { key: "move_top", label: "访客页 · 车牌卡下方" },
+  { key: "move_bottom", label: "访客页 · 底部推荐位" },
+  { key: "owner_top", label: "车主后台 · 顶部" },
+];
+const AD_POSITION_KEYS = AD_POSITIONS.map((p) => p.key);
+
 export default {
   async fetch(request, env) {
     if (request.method === "OPTIONS") return cors(new Response(null, { status: 204 }), env);
@@ -69,6 +78,8 @@ function matchRoute(method, pathname) {
     ["POST", /^\/api\/vehicles$/, handleCreateVehicle],
     ["GET", /^\/api\/vehicles\/([^/]+)\/public$/, handlePublicVehicle, ["vehicleToken"]],
     ["POST", /^\/api\/vehicles\/([^/]+)\/notify$/, handleNotify, ["vehicleToken"]],
+    // 广告位（公开读取，仅返回已启用）
+    ["GET", /^\/api\/ads$/, handlePublicAds],
     // 车主（ownerToken 或 车牌+PIN）
     ["POST", /^\/api\/owner\/recover$/, handleRecoverOwner],
     ["GET", /^\/api\/owner\/([^/]+)\/vehicle$/, handleOwnerVehicle, ["ownerToken"]],
@@ -84,6 +95,10 @@ function matchRoute(method, pathname) {
     ["POST", /^\/api\/admin\/accounts$/, handleAdminCreateAccount, [], "admin"],
     ["DELETE", /^\/api\/admin\/accounts\/([^/]+)$/, handleAdminDeleteAccount, ["username"], "admin"],
     ["GET", /^\/api\/admin\/lookup$/, handleAdminLookup, [], "admin"],
+    ["GET", /^\/api\/admin\/ads$/, handleAdminAdsList, [], "admin"],
+    ["POST", /^\/api\/admin\/ads$/, handleAdminAdsCreate, [], "admin"],
+    ["PUT", /^\/api\/admin\/ads\/(\d+)$/, handleAdminAdsUpdate, ["id"], "admin"],
+    ["DELETE", /^\/api\/admin\/ads\/(\d+)$/, handleAdminAdsDelete, ["id"], "admin"],
   ];
   for (const [routeMethod, pattern, handler, keys = [], guard] of routes) {
     const match = pathname.match(pattern);
@@ -621,7 +636,7 @@ async function handleAdminDeleteAccount({ env, params }) {
   const rows = await env.DB.prepare("SELECT COUNT(*) AS c FROM admins").first();
   if (rows.c <= 1) return json({ error: "last_admin", message: "至少保留一个管理员账号。" }, 400);
   const res = await env.DB.prepare("DELETE FROM admins WHERE username = ?").bind(params.username).run();
-  if (res.changes === 0) return json({ error: "not_found", message: "账号不存在。" }, 404);
+  if (changedRows(res) === 0) return json({ error: "not_found", message: "账号不存在。" }, 404);
   await env.DB.prepare("DELETE FROM admin_sessions WHERE username = ?").bind(params.username).run();
   return json({ message: "账号已删除。" });
 }
@@ -700,6 +715,101 @@ async function handleAdminLookup({ env, url }) {
     createdAt: vehicle.created_at,
     recentNotifications: logs.results || [],
   });
+}
+
+/* ============================================================
+   广告位：公开读取（仅返回已启用）
+   ============================================================ */
+async function handlePublicAds({ env, url }) {
+  assertConfig(env, ["DB"]);
+  const position = String(url.searchParams.get("position") || "").trim();
+  const sql = position
+    ? "SELECT id, position, title, image_url, link_url, sort_order FROM ads WHERE enabled = 1 AND position = ? ORDER BY sort_order ASC, id DESC"
+    : "SELECT id, position, title, image_url, link_url, sort_order FROM ads WHERE enabled = 1 ORDER BY position ASC, sort_order ASC, id DESC";
+  const rows = position
+    ? await env.DB.prepare(sql).bind(position).all()
+    : await env.DB.prepare(sql).all();
+  return json({ ads: rows.results || [] });
+}
+
+/* ============================================================
+   广告位：超级管理员增 / 改 / 删 / 查
+   ============================================================ */
+async function handleAdminAdsList({ env }) {
+  const rows = await env.DB.prepare("SELECT * FROM ads ORDER BY position ASC, sort_order ASC, id DESC").all();
+  return json({ positions: AD_POSITIONS, ads: rows.results || [] });
+}
+
+async function handleAdminAdsCreate({ request, env }) {
+  const input = await readJson(request);
+  const error = validateAdInput(input);
+  if (error) return json(error, 400);
+  let imageUrl;
+  try { imageUrl = normalizeHttpUrl(input.imageUrl); }
+  catch { return json({ error: "invalid_image_url", message: "广告图片链接必须是 http 或 https 地址。" }, 400); }
+  let linkUrl = "";
+  if (input.linkUrl) {
+    try { linkUrl = normalizeHttpUrl(input.linkUrl); }
+    catch { return json({ error: "invalid_link_url", message: "跳转链接必须是 http 或 https 地址。" }, 400); }
+  }
+  const now = nowIso();
+  const res = await env.DB.prepare(
+    `INSERT INTO ads (position, title, image_url, link_url, sort_order, enabled, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+  )
+    .bind(input.position, String(input.title || "").trim(), imageUrl, linkUrl, Number(input.sortOrder) || 0, input.enabled === false ? 0 : 1, now, now)
+    .run();
+  return json({ message: "广告已创建。", id: res.meta?.last_row_id ?? null }, 201);
+}
+
+async function handleAdminAdsUpdate({ request, env, params }) {
+  const input = await readJson(request);
+  const id = Number(params.id);
+  const exists = await env.DB.prepare("SELECT id FROM ads WHERE id = ?").bind(id).first();
+  if (!exists) return json({ error: "not_found", message: "广告不存在。" }, 404);
+  const updates = [];
+  const values = [];
+  if ("position" in input) {
+    if (!AD_POSITION_KEYS.includes(input.position)) return json({ error: "invalid_position", message: "广告位不合法。" }, 400);
+    updates.push("position = ?"); values.push(input.position);
+  }
+  if ("title" in input) { updates.push("title = ?"); values.push(String(input.title || "").trim()); }
+  if ("imageUrl" in input) {
+    try { updates.push("image_url = ?"); values.push(normalizeHttpUrl(input.imageUrl)); }
+    catch { return json({ error: "invalid_image_url", message: "广告图片链接必须是 http 或 https 地址。" }, 400); }
+  }
+  if ("linkUrl" in input) {
+    const v = String(input.linkUrl || "").trim();
+    if (!v) { updates.push("link_url = ?"); values.push(""); }
+    else {
+      try { updates.push("link_url = ?"); values.push(normalizeHttpUrl(v)); }
+      catch { return json({ error: "invalid_link_url", message: "跳转链接必须是 http 或 https 地址。" }, 400); }
+    }
+  }
+  if ("sortOrder" in input) { updates.push("sort_order = ?"); values.push(Number(input.sortOrder) || 0); }
+  if ("enabled" in input) { updates.push("enabled = ?"); values.push(input.enabled ? 1 : 0); }
+  if (!updates.length) return json({ message: "没有需要更新的字段。" });
+  updates.push("updated_at = ?");
+  values.push(nowIso(), id);
+  await env.DB.prepare(`UPDATE ads SET ${updates.join(", ")} WHERE id = ?`).bind(...values).run();
+  return json({ message: "广告已更新。" });
+}
+
+async function handleAdminAdsDelete({ env, params }) {
+  const res = await env.DB.prepare("DELETE FROM ads WHERE id = ?").bind(Number(params.id)).run();
+  if (changedRows(res) === 0) return json({ error: "not_found", message: "广告不存在。" }, 404);
+  return json({ message: "广告已删除。" });
+}
+
+// D1 把受影响行数放在 meta.changes（顶层没有 changes 字段）
+function changedRows(result) {
+  return Number(result?.meta?.changes ?? result?.changes ?? 0);
+}
+
+function validateAdInput(input) {
+  if (!AD_POSITION_KEYS.includes(input.position)) return { error: "invalid_position", message: "请选择有效的广告位。" };
+  if (!input.imageUrl || !String(input.imageUrl).trim()) return { error: "missing_image_url", message: "请填写广告图片链接。" };
+  return null;
 }
 
 /* ============================================================

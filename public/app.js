@@ -80,7 +80,7 @@ function openModal({ title, body, confirmText, danger, onConfirm }) {
     mask.id = "modalMask";
     mask.innerHTML = `<div class="modal">
       <h3 id="modalTitle"></h3>
-      <p id="modalBody"></p>
+      <div id="modalBody" class="modal-body"></div>
       <div class="actions row" style="margin-top:0">
         <button class="btn btn-ghost" id="modalCancel">取消</button>
         <button class="btn" id="modalOk"></button>
@@ -234,17 +234,14 @@ function setupMovePage() {
   async function load() {
     try {
       const v = await api.getPublicVehicle(token);
+      const chs = v.availableChannels || [];
       showResult(
         vehicleEl,
-        `<div class="hero-plate">
-           <div class="eyebrow">扫码联系车主</div>
-           <div class="plate">${escapeHtml(v.maskedPlate)}</div>
-           <div class="muted">需要车主挪车？点击下方按钮匿名通知</div>
-         </div>`
+        `<div class="plate-big">${escapeHtml(v.maskedPlate)}</div>
+         <p class="privacy-note">为保护双方隐私，本次通知将采用 <b>${chs.length ? "匿名方式" : "平台通道"}</b> 送达车主，不会暴露你的号码。</p>`
       );
-      const chs = v.availableChannels || [];
       if (chs.length === 0) {
-        showResult(resultEl, "该车主暂未配置任何通知方式。", true);
+        showResult(resultEl, "该车主暂未配置任何通知方式，请联系车主本人。", true);
         if (notifyBtn) notifyBtn.disabled = true;
         return;
       }
@@ -616,6 +613,13 @@ const ADMIN_GROUPS = [
 ];
 const BOOL_KEYS = new Set(["ocr_demo_mode", "sms_enabled_global", "wechat_enabled_global", "privacy_enabled_global", "showdoc_enabled_global"]);
 const MASKED = "••••••";
+// 广告位兜底列表（正常由后端 /api/admin/ads 返回，接口异常时仍可用）
+const AD_POSITION_FALLBACK = [
+  { key: "home_top", label: "首页 · 顶部横幅" },
+  { key: "move_top", label: "访客页 · 车牌卡下方" },
+  { key: "move_bottom", label: "访客页 · 底部推荐位" },
+  { key: "owner_top", label: "车主后台 · 顶部" },
+];
 
 function setupAdminPage() {
   const mount = $("#adminMount");
@@ -663,20 +667,28 @@ async function renderAdminConsole(token) {
   const mount = $("#adminMount");
   showResult(mount, "正在加载管理控制台…");
   let settings = [];
+  let adPositions = [];
+  let ads = [];
   try {
-    const r = await api.adminGetConfig(token);
+    const [r, adsRes] = await Promise.all([
+      api.adminGetConfig(token),
+      api.adminListAds(token).catch(() => ({ positions: [], ads: [] })),
+    ]);
     settings = r.settings || [];
+    adPositions = adsRes.positions || [];
+    ads = adsRes.ads || [];
   } catch (err) {
     if (err.status === 401) { clearAdminToken(); renderAdminLogin(); return; }
     showResult(mount, `<div class="card error">${escapeHtml(err.message || "加载失败")}</div>`);
     return;
   }
+  if (!adPositions.length) adPositions = AD_POSITION_FALLBACK;
   const byKey = Object.fromEntries(settings.map((s) => [s.key, s]));
 
   mount.innerHTML = `
   <div class="dash-grid fade-in">
     <section class="card span-2" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
-      <div><h2 style="margin:0">🛡️ 超级管理员控制台</h2><p class="muted" style="margin:4px 0 0">全局通知渠道配置 · 账号管理 · 车牌查手机号</p></div>
+      <div><h2 style="margin:0">🛡️ 超级管理员控制台</h2><p class="muted" style="margin:4px 0 0">全局通知渠道 · 广告位 · 车牌查手机号 · 账号管理</p></div>
       <button class="btn btn-sm btn-ghost" id="adLogout">退出登录</button>
     </section>
 
@@ -723,6 +735,33 @@ async function renderAdminConsole(token) {
       <div id="adminLookupResult" class="result hidden" style="margin-top:12px"></div>
     </section>
 
+    <!-- 广告位管理 -->
+    <section class="card span-2">
+      <h2>🖼️ 广告位管理</h2>
+      <p class="muted">只需填写广告<strong>图片链接</strong>，无需上传图片。某个位置没有投放中的广告时，前端会自动隐藏该广告位，不会出现空白块。</p>
+      <div id="adListBox" style="margin-top:12px"><p class="muted">正在加载…</p></div>
+      <h3 class="group-title">新增广告</h3>
+      <form id="adForm" class="grid-form">
+        <label class="span-2">投放位置
+          <select id="adPos">${adPositions.map((p) => `<option value="${escapeHtml(p.key)}">${escapeHtml(p.label)}</option>`).join("")}</select>
+        </label>
+        <label class="span-2">广告图片链接（必填）
+          <input id="adImg" placeholder="https://example.com/banner.jpg" autocomplete="off" required />
+        </label>
+        <label class="span-2">点击跳转链接（可选）
+          <input id="adLink" placeholder="https://example.com" autocomplete="off" />
+        </label>
+        <label class="span-2">备注名（可选）
+          <input id="adTitle" placeholder="便于后台辨认，如「双十一活动」" autocomplete="off" />
+        </label>
+        <label class="span-2">排序（数字越小越靠前）
+          <input id="adSort" type="number" value="0" />
+        </label>
+        <button type="submit" class="btn btn-primary span-2">添加广告</button>
+      </form>
+      <div id="adResult" class="result hidden" style="margin-top:10px"></div>
+    </section>
+
     <!-- 管理员账号 -->
     <section class="card">
       <h2>管理员账号</h2>
@@ -749,6 +788,33 @@ async function renderAdminConsole(token) {
     toast("已退出登录", "ok");
     renderAdminLogin();
   };
+
+  // 广告位管理
+  renderAdminAdsList(token, adPositions, ads);
+  $("#adForm", mount).addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const result = $("#adResult", mount);
+    showResult(result, "正在添加…");
+    try {
+      await api.adminCreateAd(token, {
+        position: $("#adPos", mount).value,
+        imageUrl: $("#adImg", mount).value.trim(),
+        linkUrl: $("#adLink", mount).value.trim(),
+        title: $("#adTitle", mount).value.trim(),
+        sortOrder: Number($("#adSort", mount).value) || 0,
+      });
+      $("#adImg", mount).value = "";
+      $("#adLink", mount).value = "";
+      $("#adTitle", mount).value = "";
+      $("#adSort", mount).value = "0";
+      showResult(result, "✅ 广告已添加，前端刷新即可看到。");
+      toast("广告已添加", "ok");
+      await reloadAdminAds(token);
+    } catch (err) {
+      if (err.status === 401) { clearAdminToken(); renderAdminLogin(); return; }
+      showResult(result, escapeHtml(err.message || "添加失败"), true);
+    }
+  });
 
   // 保存全局配置
   $("#adminConfigForm", mount).addEventListener("submit", async (e) => {
@@ -832,6 +898,123 @@ async function renderAdminConsole(token) {
       showResult(result, escapeHtml(err.message || "创建失败"), true);
     }
   });
+}
+
+/* ---------------- 广告位（后台） ---------------- */
+async function reloadAdminAds(token) {
+  try {
+    const r = await api.adminListAds(token);
+    renderAdminAdsList(token, r.positions || [], r.ads || []);
+  } catch (err) {
+    if (err.status === 401) { clearAdminToken(); renderAdminLogin(); }
+  }
+}
+
+function renderAdminAdsList(token, positions, ads) {
+  const box = $("#adListBox");
+  if (!box) return;
+  if (!ads.length) {
+    box.innerHTML = `<p class="muted">暂无广告。添加后会自动显示在对应位置。</p>`;
+    return;
+  }
+  const posLabel = Object.fromEntries(positions.map((p) => [p.key, p.label]));
+  const groups = {};
+  ads.forEach((a) => { (groups[a.position] = groups[a.position] || []).push(a); });
+
+  box.innerHTML = Object.keys(groups).map((pos) => `
+    <h3 class="group-title">${escapeHtml(posLabel[pos] || pos)}</h3>
+    <div class="log-list">
+      ${groups[pos].map((a) => `
+        <div class="log-item" style="flex-wrap:wrap">
+          <img class="ad-thumb" src="${escapeHtml(a.image_url)}" alt="" referrerpolicy="no-referrer" />
+          <div style="flex:1;min-width:140px">
+            <div class="ch">${escapeHtml(a.title || "未命名广告")}</div>
+            <div class="t" style="word-break:break-all">#${a.id} · 排序 ${a.sort_order}${a.link_url ? " · 含跳转" : ""}</div>
+          </div>
+          <span class="pill ${a.enabled ? "ok" : "err"}"><span class="dot"></span>${a.enabled ? "投放中" : "已停用"}</span>
+          <div class="actions row" style="margin:0;gap:6px">
+            <button class="btn btn-sm btn-ghost" data-ad-toggle="${a.id}">${a.enabled ? "停用" : "启用"}</button>
+            <button class="btn btn-sm btn-ghost" data-ad-edit="${a.id}">编辑</button>
+            <button class="btn btn-sm btn-ghost" data-ad-del="${a.id}">删除</button>
+          </div>
+        </div>`).join("")}
+    </div>`).join("");
+
+  const find = (id) => ads.find((x) => String(x.id) === String(id));
+
+  $$("[data-ad-toggle]", box).forEach((b) =>
+    b.addEventListener("click", async () => {
+      const ad = find(b.dataset.adToggle);
+      if (!ad) return;
+      try {
+        await api.adminUpdateAd(token, ad.id, { enabled: !ad.enabled });
+        toast(ad.enabled ? "已停用" : "已启用", "ok");
+        await reloadAdminAds(token);
+      } catch (err) { toast(err.message || "操作失败", "err"); }
+    })
+  );
+
+  $$("[data-ad-del]", box).forEach((b) =>
+    b.addEventListener("click", () => {
+      const ad = find(b.dataset.adDel);
+      if (!ad) return;
+      openModal({
+        title: "删除这条广告？",
+        body: `将删除 <b>${escapeHtml(ad.title || "未命名广告")}</b>（#${ad.id}），删除后该位置不再展示。`,
+        confirmText: "确认删除",
+        danger: true,
+        onConfirm: async () => {
+          try {
+            await api.adminDeleteAd(token, ad.id);
+            toast("广告已删除", "ok");
+            await reloadAdminAds(token);
+          } catch (err) { toast(err.message || "删除失败", "err"); }
+        },
+      });
+    })
+  );
+
+  $$("[data-ad-edit]", box).forEach((b) =>
+    b.addEventListener("click", () => {
+      const ad = find(b.dataset.adEdit);
+      if (!ad) return;
+      openModal({
+        title: `编辑广告 #${ad.id}`,
+        body: `
+          <div class="grid-form" style="margin-top:6px">
+            <label class="span-2">投放位置
+              <select id="edPos">${positions.map((p) => `<option value="${escapeHtml(p.key)}" ${p.key === ad.position ? "selected" : ""}>${escapeHtml(p.label)}</option>`).join("")}</select>
+            </label>
+            <label class="span-2">图片链接
+              <input id="edImg" value="${escapeHtml(ad.image_url)}" />
+            </label>
+            <label class="span-2">跳转链接（可空）
+              <input id="edLink" value="${escapeHtml(ad.link_url || "")}" />
+            </label>
+            <label class="span-2">备注名
+              <input id="edTitle" value="${escapeHtml(ad.title || "")}" />
+            </label>
+            <label class="span-2">排序
+              <input id="edSort" type="number" value="${Number(ad.sort_order) || 0}" />
+            </label>
+          </div>`,
+        confirmText: "保存",
+        onConfirm: async () => {
+          try {
+            await api.adminUpdateAd(token, ad.id, {
+              position: $("#edPos").value,
+              imageUrl: $("#edImg").value.trim(),
+              linkUrl: $("#edLink").value.trim(),
+              title: $("#edTitle").value.trim(),
+              sortOrder: Number($("#edSort").value) || 0,
+            });
+            toast("广告已更新", "ok");
+            await reloadAdminAds(token);
+          } catch (err) { toast(err.message || "更新失败", "err"); }
+        },
+      });
+    })
+  );
 }
 
 async function loadAdminAccounts(token) {
@@ -921,8 +1104,41 @@ function setupDemoPage() {
   play();
 }
 
+/* ============================================================
+   广告位渲染（图片链接由超级管理员在后台配置，无广告则整块隐藏）
+   ============================================================ */
+async function renderAdSlots() {
+  const slots = $$("[data-ad-position]");
+  if (!slots.length) return;
+  await Promise.all(
+    slots.map(async (slot) => {
+      const position = slot.dataset.adPosition;
+      try {
+        const r = await api.listAds(position);
+        const ads = r.ads || [];
+        if (!ads.length) { slot.classList.add("hidden"); return; }
+        slot.classList.remove("hidden");
+        slot.innerHTML =
+          `<div class="ad-label">推广</div><div class="ad-list">` +
+          ads
+            .map((ad) => {
+              const img = `<img src="${escapeHtml(ad.image_url)}" alt="${escapeHtml(ad.title || "推广")}" loading="lazy" referrerpolicy="no-referrer" />`;
+              return ad.link_url
+                ? `<a class="ad-item" href="${escapeHtml(ad.link_url)}" target="_blank" rel="noopener noreferrer sponsored">${img}</a>`
+                : `<div class="ad-item">${img}</div>`;
+            })
+            .join("") +
+          `</div>`;
+      } catch {
+        slot.classList.add("hidden");
+      }
+    })
+  );
+}
+
 /* ---------------- 启动 ---------------- */
 ensureConfigBanner();
+renderAdSlots();
 
 const page = document.body.dataset.page;
 if (page === "bind") setupBindPage();
