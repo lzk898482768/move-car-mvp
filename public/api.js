@@ -85,6 +85,9 @@ export function clearAdminToken() { try { localStorage.removeItem(ADMIN_KEY); } 
 export const api = {
   health: () => request("/api/health"),
 
+  // 平台已开通的通知通道（公开）
+  publicChannels: () => request("/api/channels"),
+
   createVehicle: (input) =>
     request("/api/vehicles", { method: "POST", body: input }),
 

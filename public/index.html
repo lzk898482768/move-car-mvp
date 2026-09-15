@@ -40,30 +40,34 @@
             <span class="field-hint">点击车牌框，用专用键盘点选；新能源车牌自动多一位（8 位）。</span>
           </label>
 
-          <label class="span-2">企业微信机器人 Webhook（可选）
+          <label class="span-2" data-channel="wechat_work">企业微信机器人 Webhook（可选）
             <input id="wechatWorkWebhook" name="wechatWorkWebhook" placeholder="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=..." autocomplete="off" />
             <span class="field-hint">在企业微信群里添加「群机器人」即可获得。</span>
           </label>
 
-          <label class="span-2">ShowDoc Webhook（可选）
+          <label class="span-2" data-channel="showdoc">ShowDoc Webhook（可选）
             <input id="showdocWebhook" name="showdocWebhook" placeholder="https://你的showdoc地址/webhook/..." autocomplete="off" />
           </label>
-          <label class="span-2">ShowDoc Token（可选）
+          <label class="span-2" data-channel="showdoc">ShowDoc Token（可选）
             <input id="showdocToken" name="showdocToken" placeholder="如需要鉴权则填写" autocomplete="off" />
           </label>
 
-          <div class="switch-row span-2">
-            <div class="meta"><b>短信通知</b><span>需填写手机号，由腾讯云短信下发</span></div>
+          <div class="switch-row span-2" data-channel="sms">
+            <div class="meta"><b>短信通知</b><span>需填写手机号，由平台短信通道下发</span></div>
             <label class="switch"><input type="checkbox" id="smsEnabled" name="smsEnabled" /><span class="track"></span><span class="thumb"></span></label>
           </div>
-          <div class="switch-row span-2">
+          <div class="switch-row span-2" data-channel="privacy_call">
             <div class="meta"><b>隐私号呼叫</b><span>通过隐私号服务呼叫车主，隐藏真实号码</span></div>
             <label class="switch"><input type="checkbox" id="privacyCallEnabled" name="privacyCallEnabled" /><span class="track"></span><span class="thumb"></span></label>
           </div>
 
-          <label class="span-2">车主手机号（短信 / 隐私号需要）
+          <label class="span-2" data-channel="phone">车主手机号（短信 / 隐私号需要）
             <input id="ownerPhone" name="ownerPhone" inputmode="tel" placeholder="11 位手机号" autocomplete="off" />
           </label>
+
+          <div class="span-2 hidden" id="noChannelNote">
+            <div class="notice error">平台尚未开通任何通知方式，请联系管理员在后台「通知通道统一管理」中开启后再来创建。</div>
+          </div>
 
           <label class="span-2">管理密码（4-12 位，用于找回管理入口）
             <input id="ownerPin" name="ownerPin" type="password" inputmode="numeric" placeholder="设置一个自己记得住的密码" autocomplete="new-password" />

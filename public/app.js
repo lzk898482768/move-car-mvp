@@ -155,6 +155,56 @@ function channelPill(ch, ok) {
   return `<span class="pill ${ok ? "ok" : "off"}"><span class="dot"></span>${escapeHtml(label)}</span>`;
 }
 
+/* ---------------- 车主可见通道：只显示超级管理员已开通的 ---------------- */
+function ownerOpenedChannels(vehicle) {
+  const list = vehicle?.platformChannels;
+  if (Array.isArray(list)) return list;
+  // 后端未返回（旧版本）时回退为全部，避免误伤
+  return ["wechat_work", "showdoc", "sms", "privacy_call"];
+}
+
+function ownerChannelFields(vehicle) {
+  const opened = new Set(ownerOpenedChannels(vehicle));
+  const has = (c) => opened.has(c);
+  if (!opened.size) {
+    return `<p class="muted" style="grid-column:1/-1">超级管理员尚未开通任何通知方式，请联系平台管理员在后台「通知通道统一管理」中开启。</p>`;
+  }
+  const parts = [];
+  if (has("wechat_work")) {
+    parts.push(`<label class="span-2">企业微信 Webhook
+      <input id="f_wechat" placeholder="https://qyapi.weixin.qq.com/..." value="${escapeHtml(vehicle.wechatWorkWebhook || "")}">
+      <span class="field-hint">${vehicle.wechatWorkEnabled ? "已配置（清空并保存可停用）" : "留空则使用平台默认通道（若管理员已配置）"}</span>
+    </label>`);
+  }
+  if (has("showdoc")) {
+    parts.push(`<label class="span-2">ShowDoc Webhook
+        <input id="f_showdoc" placeholder="https://..." value="${escapeHtml(vehicle.showdocWebhook || "")}">
+      </label>
+      <label class="span-2">ShowDoc Token
+        <input id="f_showdocToken" placeholder="${vehicle.hasShowdocToken ? "已设置（留空则保持不变）" : "可选"}" value="">
+      </label>`);
+  }
+  if (has("sms") || has("privacy_call")) {
+    parts.push(`<label class="span-2">车主手机号（短信 / 隐私号需要）
+        <input id="f_phone" inputmode="tel" placeholder="${vehicle.ownerPhoneMasked ? `当前：${escapeHtml(vehicle.ownerPhoneMasked)}（留空则不变）` : "用于短信与隐私号呼叫"}" value="">
+      </label>`);
+  }
+  if (has("sms")) {
+    parts.push(`<div class="switch-row span-2">
+        <div class="meta"><b>短信通知</b><span>由平台短信通道下发到车主</span></div>
+        <label class="switch"><input type="checkbox" id="f_sms" ${vehicle.smsEnabled ? "checked" : ""}><span class="track"></span><span class="thumb"></span></label>
+      </div>`);
+  }
+  if (has("privacy_call")) {
+    parts.push(`<div class="switch-row span-2">
+        <div class="meta"><b>隐私号呼叫</b><span>通过隐私号服务呼叫，隐藏真实号码</span></div>
+        <label class="switch"><input type="checkbox" id="f_privacy" ${vehicle.privacyCallEnabled ? "checked" : ""}><span class="track"></span><span class="thumb"></span></label>
+      </div>`);
+  }
+  parts.push(`<button class="btn btn-primary span-2" id="saveChannels">保存渠道配置</button>`);
+  return parts.join("");
+}
+
 /* ============================================================
    车主 · 创建挪车码（bind）
    ============================================================ */
@@ -164,6 +214,28 @@ function setupBindPage() {
   if (!form) return;
   // 组件挂载成功后接管并隐藏原生 input，值始终同步回 input，保证任何情况下都能读到
   const plateInput = createPlateInput($("#plateNumberHost"), { input: $("#plateNumber"), allowTypeSwitch: true });
+
+  // 平台已开通的通道：未开通的直接隐藏（接口失败时保持全部可见，不阻断使用）
+  const opened = { wechat_work: true, showdoc: true, sms: true, privacy_call: true };
+  const applyOpened = () => {
+    const show = (name, on) => $$(`[data-channel="${name}"]`, form).forEach((el) => el.classList.toggle("hidden", !on));
+    show("wechat_work", opened.wechat_work);
+    show("showdoc", opened.showdoc);
+    show("sms", opened.sms);
+    show("privacy_call", opened.privacy_call);
+    show("phone", opened.sms || opened.privacy_call);
+    const none = !opened.wechat_work && !opened.showdoc && !opened.sms && !opened.privacy_call;
+    $("#noChannelNote")?.classList.toggle("hidden", !none);
+    const submit = $('button[type="submit"]', form);
+    if (submit) submit.disabled = none;
+  };
+  api.publicChannels()
+    .then((r) => {
+      const ch = r.channels || {};
+      for (const k of Object.keys(opened)) if (typeof ch[k] === "boolean") opened[k] = ch[k];
+      applyOpened();
+    })
+    .catch(() => {});
 
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
@@ -182,17 +254,32 @@ function setupBindPage() {
       validatePlate(plate);
       if (ownerPin && !/^\d{4,12}$/.test(ownerPin)) throw new Error("管理密码请使用 4-12 位数字。");
       const channels = [];
-      if (wechatWorkWebhook) channels.push("企业微信");
-      if (showdocWebhook) channels.push("ShowDoc");
+      // 只能选择在平台已开通范围内的通知方式
+      if (opened.wechat_work && wechatWorkWebhook) channels.push("企业微信");
+      if (opened.showdoc && showdocWebhook) channels.push("ShowDoc");
       if (smsEnabled) {
+        if (!opened.sms) throw new Error("平台尚未开通短信通知。");
         if (!isPhone(ownerPhone)) throw new Error("开启短信需填写有效手机号。");
         channels.push("短信");
       }
       if (privacyCallEnabled) {
+        if (!opened.privacy_call) throw new Error("平台尚未开通隐私号呼叫。");
         if (!isPhone(ownerPhone)) throw new Error("开启隐私号需填写有效手机号。");
         channels.push("隐私号");
       }
-      if (!channels.length) throw new Error("请至少配置一种通知方式（企业微信 / ShowDoc / 短信 / 隐私号）。");
+      if (!channels.length) {
+        const names = [
+          opened.wechat_work ? "企业微信" : "",
+          opened.showdoc ? "ShowDoc" : "",
+          opened.sms ? "短信" : "",
+          opened.privacy_call ? "隐私号" : "",
+        ].filter(Boolean);
+        throw new Error(
+          names.length
+            ? `请至少配置一种已开通的通知方式（${names.join(" / ")}）。`
+            : "平台尚未开通任何通知方式，请联系管理员。"
+        );
+      }
 
       const data = await api.createVehicle({
         plateNumber: plate,
@@ -263,7 +350,17 @@ function setupMovePage() {
         `<div class="plate-big">${escapeHtml(v.maskedPlate)}</div>
          <p class="privacy-note">为保护双方隐私，本次通知将采用 <b>${chs.length ? "匿名方式" : "平台通道"}</b> 送达车主，不会暴露你的号码。</p>`
       );
-      if (chs.length === 0) {
+      // 隐私号不可用 → 回退为直接拨打（需管理员开启直拨 + 车主登记号码）
+      const directBtn = $("#directCallButton");
+      const directNote = $("#directCallNote");
+      const dc = v.directCall;
+      if (directBtn && dc?.enabled && dc.phone) {
+        directBtn.href = `tel:${dc.phone}`;
+        directBtn.classList.remove("hidden");
+        directNote?.classList.remove("hidden");
+        if (notifyBtn) notifyBtn.textContent = "通知车主（短信 / 消息）";
+      }
+      if (chs.length === 0 && !(dc?.enabled && dc.phone)) {
         showResult(resultEl, "该车主暂未配置任何通知方式，请联系车主本人。", true);
         if (notifyBtn) notifyBtn.disabled = true;
         return;
@@ -479,33 +576,14 @@ async function renderDashboard(ownerToken) {
     <section class="card">
       <h2>通知渠道</h2>
       <div class="channels" style="margin-bottom:14px">
-        ${["wechat_work", "showdoc", "sms", "privacy_call"].map((c) => channelPill(c, enabled[c])).join("")}
+        ${ownerOpenedChannels(vehicle).length
+          ? ownerOpenedChannels(vehicle).map((c) => channelPill(c, enabled[c])).join("")
+          : `<span class="pill off"><span class="dot"></span>平台暂未开通任何通知方式</span>`}
       </div>
       <div class="grid-form">
-        <label class="span-2">企业微信 Webhook
-          <input id="f_wechat" placeholder="https://qyapi.weixin.qq.com/..." value="${escapeHtml(vehicle.wechatWorkWebhook || "")}">
-          <span class="field-hint">${vehicle.wechatWorkEnabled ? "已配置（清空并保存可停用）" : "留空则使用平台默认通道（若管理员已配置）"}</span>
-        </label>
-        <label class="span-2">ShowDoc Webhook
-          <input id="f_showdoc" placeholder="https://..." value="${escapeHtml(vehicle.showdocWebhook || "")}">
-        </label>
-        <label class="span-2">ShowDoc Token
-          <input id="f_showdocToken" placeholder="${vehicle.hasShowdocToken ? "已设置（留空则保持不变）" : "可选"}" value="">
-        </label>
-        <label class="span-2">车主手机号（短信/隐私号需要）
-          <input id="f_phone" inputmode="tel" placeholder="${vehicle.ownerPhoneMasked ? `当前：${escapeHtml(vehicle.ownerPhoneMasked)}（留空则不变）` : "用于短信与隐私号呼叫"}" value="">
-        </label>
-        <div class="switch-row span-2">
-          <div class="meta"><b>短信通知</b><span>腾讯云短信下发到车主</span></div>
-          <label class="switch"><input type="checkbox" id="f_sms" ${vehicle.smsEnabled ? "checked" : ""}><span class="track"></span><span class="thumb"></span></label>
-        </div>
-        <div class="switch-row span-2">
-          <div class="meta"><b>隐私号呼叫</b><span>通过隐私号服务呼叫，隐藏真实号码</span></div>
-          <label class="switch"><input type="checkbox" id="f_privacy" ${vehicle.privacyCallEnabled ? "checked" : ""}><span class="track"></span><span class="thumb"></span></label>
-        </div>
-        <button class="btn btn-primary span-2" id="saveChannels">保存渠道配置</button>
+        ${ownerChannelFields(vehicle)}
       </div>
-      <p class="form-note">仅提交你实际改动过的字段；留空的密钥类字段会保持原值不变。</p>
+      <p class="form-note">仅展示平台已开通的通知方式；仅提交你实际改动过的字段，留空的密钥类字段保持原值。</p>
     </section>
 
     <!-- 管理密码 -->
@@ -568,12 +646,15 @@ async function renderDashboard(ownerToken) {
   };
 
   $("#saveChannels", mount).onclick = async () => {
-    const wechat = $("#f_wechat", mount).value.trim();
-    const showdoc = $("#f_showdoc", mount).value.trim();
-    const showdocToken = $("#f_showdocToken", mount).value.trim();
-    const phone = normalizePhone($("#f_phone", mount).value);
-    const sms = $("#f_sms", mount).checked;
-    const privacy = $("#f_privacy", mount).checked;
+    // 未开通的通道字段不会渲染，取值时做空值兜底
+    const txt = (id) => ($(`#${id}`, mount) ? $("#" + id, mount).value.trim() : "");
+    const chk = (id) => ($(`#${id}`, mount) ? $("#" + id, mount).checked : false);
+    const wechat = txt("f_wechat");
+    const showdoc = txt("f_showdoc");
+    const showdocToken = txt("f_showdocToken");
+    const phone = normalizePhone(txt("f_phone"));
+    const sms = chk("f_sms");
+    const privacy = chk("f_privacy");
 
     // 只提交「实际改动过」的字段：文本清空=停用，留空=保持原值；开关始终提交明确状态
     const patch = {};
@@ -637,7 +718,109 @@ const ADMIN_GROUPS = [
   { title: "其他", keys: ["default_phone_country_code", "ocr_demo_plate", "ocr_demo_mode"] },
   { title: "平台通道开关", keys: ["sms_enabled_global", "wechat_enabled_global", "privacy_enabled_global", "showdoc_enabled_global"] },
 ];
-const BOOL_KEYS = new Set(["ocr_demo_mode", "sms_enabled_global", "wechat_enabled_global", "privacy_enabled_global", "showdoc_enabled_global"]);
+const BOOL_KEYS = new Set(["ocr_demo_mode", "sms_enabled_global", "wechat_enabled_global", "privacy_enabled_global", "showdoc_enabled_global", "direct_call_enabled_global"]);
+
+// 通道分组兜底（正常由后端 /api/admin/config 返回 groups）
+const CHANNEL_GROUPS_FALLBACK = [
+  { key: "wechat_work", label: "企业微信机器人", icon: "💬" },
+  { key: "showdoc", label: "ShowDoc", icon: "📄" },
+  { key: "sms", label: "短信通知", icon: "📱" },
+  { key: "privacy_call", label: "隐私号呼叫", icon: "☎️" },
+  { key: "direct_call", label: "直拨车主（回退）", icon: "📞" },
+];
+
+/* ---------------- 统一通知配置面板渲染 ---------------- */
+// 按「通道分组」渲染：每通道一个开关 + 服务商下拉 + 条件显示的字段
+function renderChannelConfig(settings, groups, status = {}) {
+  const byKey = Object.fromEntries((settings || []).map((s) => [s.key, s]));
+  const valOf = (key) => String(byKey[key]?.value ?? "").trim();
+
+  const fieldHtml = (s) => {
+    const wrap = (inner, extraAttrs = "") =>
+      `<label class="span-2 cfg-field" ${extraAttrs}>${inner}</label>`;
+    if (s.type === "bool") {
+      const on = valOf(s.key) !== "false";
+      return `<div class="switch-row span-2 cfg-field" data-cfg-switch="${escapeHtml(s.key)}">
+        <div class="meta"><b>${escapeHtml(s.label)}</b><span class="cfg-state">${on ? "已开通" : "已关闭"}</span></div>
+        <label class="switch"><input type="checkbox" data-cfg="${escapeHtml(s.key)}" data-bool="1" ${on ? "checked" : ""}><span class="track"></span><span class="thumb"></span></label>
+      </div>`;
+    }
+    if (s.type === "select") {
+      const opts = (s.options || []).map(
+        (o) => `<option value="${escapeHtml(o.value)}" ${valOf(s.key) === o.value ? "selected" : ""}>${escapeHtml(o.label)}</option>`
+      ).join("");
+      return wrap(`${escapeHtml(s.label)}<select data-cfg="${escapeHtml(s.key)}">${opts}</select>`, depAttrs(s));
+    }
+    return wrap(
+      `${escapeHtml(s.label)}
+       <input data-cfg="${escapeHtml(s.key)}" value="${escapeHtml(s.value || "")}" ${s.secret ? "autocomplete=\"off\"" : ""} />
+       ${s.secret ? `<span class="field-hint">敏感字段，${MASKED} 表示已设置，留空则保持不变</span>` : ""}`,
+      depAttrs(s)
+    );
+  };
+
+  const depAttrs = (s) =>
+    s.showIf ? `data-dep="${escapeHtml(s.showIf.key)}" data-dep-in="${escapeHtml((s.showIf.in || []).join("|"))}"` : "";
+
+  const groupHtml = (grp) => {
+    const items = (settings || []).filter((s) => (s.group || "other") === grp.key && s.type !== "bool");
+    const bools = (settings || []).filter((s) => (s.group || "other") === grp.key && s.type === "bool");
+    const opened = Boolean(status[grp.key]);
+    return `<div class="chan-card ${opened ? "on" : "off"}">
+      <div class="chan-head">
+        <span class="chan-ic">${escapeHtml(grp.icon || "🔔")}</span>
+        <div class="chan-meta">
+          <b>${escapeHtml(grp.label)}</b>
+          <span class="field-hint">${CHANNEL_HINTS[grp.key] || ""}</span>
+        </div>
+        <span class="pill ${opened ? "ok" : "off"}"><span class="dot"></span>${opened ? "已开通" : "未开通"}</span>
+      </div>
+      <div class="grid-form">
+        ${bools.map(fieldHtml).join("")}
+        ${items.map(fieldHtml).join("")}
+      </div>
+    </div>`;
+  };
+
+  const otherGroup = (settings || []).filter((s) => (s.group || "other") === "other");
+  return (
+    groups.map(groupHtml).join("") +
+    (otherGroup.length
+      ? `<div class="chan-card">
+           <div class="chan-head"><span class="chan-ic">⚙️</span><div class="chan-meta"><b>其他设置</b><span class="field-hint">OCR 与号码格式等</span></div></div>
+           <div class="grid-form">${otherGroup.map(fieldHtml).join("")}</div>
+         </div>`
+      : "")
+  );
+}
+
+const CHANNEL_HINTS = {
+  wechat_work: "车主未单独配置时使用这里的默认 Webhook",
+  showdoc: "车主未单独配置时使用这里的默认 Webhook",
+  sms: "支持腾讯云 / 阿里云 / 自定义 Webhook 三家服务商",
+  privacy_call: "支持自定义 Webhook / 腾讯云号码保护 / 阿里云号码保护",
+  direct_call: "隐私号未开通时，访客可直接拨打车主真实号码（请谨慎开启）",
+};
+
+// 服务商下拉联动：只显示当前服务商需要的字段
+function syncConfigVisibility(form) {
+  if (!form) return;
+  $$("[data-dep]", form).forEach((el) => {
+    const key = el.dataset.dep;
+    const allowed = (el.dataset.depIn || "").split("|");
+    const cur = ($(`[data-cfg="${key}"]`, form)?.value ?? "").trim();
+    el.classList.toggle("hidden", !allowed.includes(cur));
+  });
+  $$("[data-cfg-switch]", form).forEach((row) => {
+    const box = $("[data-bool]", row);
+    const state = $(".cfg-state", row);
+    if (!box || !state) return;
+    const on = box.checked;
+    state.textContent = on ? "已开通" : "已关闭";
+    row.closest(".chan-card")?.classList.toggle("on", on);
+    row.closest(".chan-card")?.classList.toggle("off", !on);
+  });
+}
 const MASKED = "••••••";
 // 广告位兜底列表（正常由后端 /api/admin/ads 返回，接口异常时仍可用）
 const AD_POSITION_FALLBACK = [
@@ -695,12 +878,16 @@ async function renderAdminConsole(token) {
   let settings = [];
   let adPositions = [];
   let ads = [];
+  let channelGroups = CHANNEL_GROUPS_FALLBACK;
+  let channelStatus = {};
   try {
     const [r, adsRes] = await Promise.all([
       api.adminGetConfig(token),
       api.adminListAds(token).catch(() => ({ positions: [], ads: [] })),
     ]);
     settings = r.settings || [];
+    channelGroups = (r.groups && r.groups.length) ? r.groups : CHANNEL_GROUPS_FALLBACK;
+    channelStatus = r.channelStatus || {};
     adPositions = adsRes.positions || [];
     ads = adsRes.ads || [];
   } catch (err) {
@@ -746,31 +933,14 @@ async function renderAdminConsole(token) {
       </details>
     </section>
 
-    <!-- 全局通知渠道 -->
+    <!-- 统一通知通道配置 -->
     <section class="card span-2">
-      <h2>全局通知渠道配置</h2>
-      <p class="muted">此处配置的通道作为所有车主的默认通道；车主也可在自己的后台单独覆盖。密钥类字段显示为 ${MASKED}，保持不变即可，填写新值才会覆盖。</p>
+      <h2>🔔 通知通道统一管理</h2>
+      <p class="muted">所有通知接口都在这里配置与开关。车主后台只会出现此处<b>已开通</b>的通道。密钥字段显示为 ${MASKED}，保持不变即可，填写新值才会覆盖。</p>
       <form id="adminConfigForm">
-        ${ADMIN_GROUPS.map((grp) => `
-          <h3 class="group-title">${escapeHtml(grp.title)}</h3>
-          <div class="grid-form">
-            ${grp.keys.map((key) => {
-              const s = byKey[key] || { key, label: key, value: "" };
-              if (BOOL_KEYS.has(key)) {
-                const on = s.value === "true";
-                return `<div class="switch-row span-2">
-                  <div class="meta"><b>${escapeHtml(s.label)}</b><span>${on ? "已启用" : "已关闭"}</span></div>
-                  <label class="switch"><input type="checkbox" data-cfg="${escapeHtml(key)}" data-bool="1" ${on ? "checked" : ""}><span class="track"></span><span class="thumb"></span></label>
-                </div>`;
-              }
-              return `<label class="span-2">${escapeHtml(s.label)}
-                <input data-cfg="${escapeHtml(key)}" value="${escapeHtml(s.value || "")}" ${s.secret ? "autocomplete=\"off\"" : ""} />
-                ${s.secret ? `<span class="field-hint">敏感字段，${MASKED} 表示已设置</span>` : ""}
-              </label>`;
-            }).join("")}
-          </div>`).join("")}
+        ${renderChannelConfig(settings, channelGroups, channelStatus)}
         <div class="actions row">
-          <button type="submit" class="btn btn-primary">保存全局配置</button>
+          <button type="submit" class="btn btn-primary">保存通知配置</button>
         </div>
         <div id="adminCfgResult" class="result hidden" style="margin-top:10px"></div>
       </form>
@@ -935,7 +1105,10 @@ async function renderAdminConsole(token) {
   };
 
   // 保存全局配置
-  $("#adminConfigForm", mount).addEventListener("submit", async (e) => {
+  const cfgForm = $("#adminConfigForm", mount);
+  syncConfigVisibility(cfgForm); // 初始：按当前服务商显示对应字段
+  cfgForm.addEventListener("change", () => syncConfigVisibility(cfgForm));
+  cfgForm.addEventListener("submit", async (e) => {
     e.preventDefault();
     const result = $("#adminCfgResult", mount);
     const payload = {};
@@ -949,8 +1122,22 @@ async function renderAdminConsole(token) {
     showResult(result, "正在保存…");
     try {
       await api.adminPutConfig(token, payload);
-      showResult(result, "✅ 全局配置已保存，立即对所有车主生效。");
-      toast("全局配置已保存", "ok");
+      showResult(result, "✅ 通知配置已保存，立即对所有车主生效。");
+      toast("通知配置已保存", "ok");
+      // 刷新状态徽标（开通状态由后端根据参数完整性实时计算）
+      try {
+        const fresh = await api.adminGetConfig(token);
+        const st = fresh.channelStatus || {};
+        $$(".chan-card", mount).forEach((card, i) => {
+          const key = channelGroups[i]?.key;
+          if (!key) return;
+          const on = Boolean(st[key]);
+          card.classList.toggle("on", on);
+          card.classList.toggle("off", !on);
+          const pill = $(".pill", card);
+          if (pill) { pill.className = `pill ${on ? "ok" : "off"}`; pill.innerHTML = `<span class="dot"></span>${on ? "已开通" : "未开通"}`; }
+        });
+      } catch {}
     } catch (err) {
       if (err.status === 401) { clearAdminToken(); renderAdminLogin(); return; }
       showResult(result, escapeHtml(err.message || "保存失败"), true);

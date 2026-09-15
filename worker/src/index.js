@@ -8,27 +8,91 @@ const ADMIN_SESSION_DAYS = 7;
 const RECOVER_MAX_ATTEMPTS = 5;
 const RECOVER_WINDOW_SECONDS = 600;
 
+/* ============================================================
+   通知通道统一注册表
+   —— 所有通知能力都在此声明：所属通道分组、是否开关、可选服务商、所需配置项
+   ============================================================ */
+const SMS_VENDOR_OPTIONS = [
+  { value: "tencent", label: "腾讯云短信" },
+  { value: "aliyun", label: "阿里云短信" },
+  { value: "custom", label: "自定义短信 Webhook" },
+];
+const PRIVACY_VENDOR_OPTIONS = [
+  { value: "custom", label: "自定义隐私号 Webhook" },
+  { value: "tencent", label: "腾讯云号码保护" },
+  { value: "aliyun", label: "阿里云号码隐私保护" },
+];
+
+// 通道分组（决定超管后台的分区与「是否开通」状态）
+const CHANNEL_GROUPS = [
+  { key: "wechat_work", label: "企业微信机器人", icon: "💬" },
+  { key: "showdoc", label: "ShowDoc", icon: "📄" },
+  { key: "sms", label: "短信通知", icon: "📱" },
+  { key: "privacy_call", label: "隐私号呼叫", icon: "☎️" },
+  { key: "direct_call", label: "直拨车主（回退）", icon: "📞" },
+];
+
 // 全局通知配置项的元数据。secret=true 的值在 D1 中以 AES-GCM 加密存储。
+// type: "bool" 开关 / "select" 下拉；showIf: 仅当某配置项取值命中时才在后台显示
 const GLOBAL_SETTINGS = [
-  { key: "tencent_secret_id", secret: true, label: "腾讯云 SecretId" },
-  { key: "tencent_secret_key", secret: true, label: "腾讯云 SecretKey" },
-  { key: "tencent_sms_app_id", secret: false, label: "短信 SmsSdkAppId" },
-  { key: "tencent_sms_sign_name", secret: false, label: "短信签名" },
-  { key: "tencent_sms_template_id", secret: false, label: "短信模板 ID" },
-  { key: "tencent_sms_region", secret: false, label: "短信地域", def: "ap-guangzhou" },
-  { key: "tencent_ocr_region", secret: false, label: "OCR 地域", def: "ap-guangzhou" },
-  { key: "wechat_work_webhook", secret: true, label: "企业微信默认 Webhook" },
-  { key: "privacy_call_webhook_url", secret: true, label: "隐私号呼叫 Webhook" },
-  { key: "privacy_call_webhook_token", secret: true, label: "隐私号呼叫 Token" },
-  { key: "showdoc_webhook", secret: true, label: "ShowDoc 默认 Webhook" },
-  { key: "showdoc_token", secret: true, label: "ShowDoc Token" },
-  { key: "ocr_demo_mode", secret: false, label: "OCR 演示模式", def: "false" },
-  { key: "ocr_demo_plate", secret: false, label: "OCR 演示车牌", def: "粤B12345" },
-  { key: "default_phone_country_code", secret: false, label: "默认手机区号", def: "+86" },
-  { key: "sms_enabled_global", secret: false, label: "平台启用短信", def: "true" },
-  { key: "wechat_enabled_global", secret: false, label: "平台启用企业微信", def: "true" },
-  { key: "privacy_enabled_global", secret: false, label: "平台启用隐私号", def: "true" },
-  { key: "showdoc_enabled_global", secret: false, label: "平台启用 ShowDoc", def: "true" },
+  /* ---- 企业微信 ---- */
+  { key: "wechat_enabled_global", secret: false, label: "启用企业微信通知", def: "true", group: "wechat_work", type: "bool" },
+  { key: "wechat_work_webhook", secret: true, label: "企业微信默认 Webhook", group: "wechat_work" },
+
+  /* ---- ShowDoc ---- */
+  { key: "showdoc_enabled_global", secret: false, label: "启用 ShowDoc 通知", def: "true", group: "showdoc", type: "bool" },
+  { key: "showdoc_webhook", secret: true, label: "ShowDoc 默认 Webhook", group: "showdoc" },
+  { key: "showdoc_token", secret: true, label: "ShowDoc Token", group: "showdoc" },
+
+  /* ---- 短信：多平台 ---- */
+  { key: "sms_enabled_global", secret: false, label: "启用短信通知", def: "true", group: "sms", type: "bool" },
+  { key: "sms_vendor", secret: false, label: "短信服务商", def: "tencent", group: "sms", type: "select", options: SMS_VENDOR_OPTIONS },
+  // 腾讯云短信
+  { key: "tencent_secret_id", secret: true, label: "腾讯云 SecretId", group: "sms", showIf: { key: "sms_vendor", in: ["tencent"] } },
+  { key: "tencent_secret_key", secret: true, label: "腾讯云 SecretKey", group: "sms", showIf: { key: "sms_vendor", in: ["tencent"] } },
+  { key: "tencent_sms_app_id", secret: false, label: "短信 SmsSdkAppId", group: "sms", showIf: { key: "sms_vendor", in: ["tencent"] } },
+  { key: "tencent_sms_sign_name", secret: false, label: "短信签名", group: "sms", showIf: { key: "sms_vendor", in: ["tencent"] } },
+  { key: "tencent_sms_template_id", secret: false, label: "短信模板 ID", group: "sms", showIf: { key: "sms_vendor", in: ["tencent"] } },
+  { key: "tencent_sms_region", secret: false, label: "短信地域", def: "ap-guangzhou", group: "sms", showIf: { key: "sms_vendor", in: ["tencent"] } },
+  // 阿里云短信
+  { key: "aliyun_access_key_id", secret: true, label: "阿里云 AccessKeyId", group: "sms", showIf: { key: "sms_vendor", in: ["aliyun"] } },
+  { key: "aliyun_access_key_secret", secret: true, label: "阿里云 AccessKeySecret", group: "sms", showIf: { key: "sms_vendor", in: ["aliyun"] } },
+  { key: "aliyun_sms_sign_name", secret: false, label: "短信签名", group: "sms", showIf: { key: "sms_vendor", in: ["aliyun"] } },
+  { key: "aliyun_sms_template_code", secret: false, label: "短信模板 CODE", group: "sms", showIf: { key: "sms_vendor", in: ["aliyun"] } },
+  { key: "aliyun_sms_region", secret: false, label: "短信地域", def: "cn-hangzhou", group: "sms", showIf: { key: "sms_vendor", in: ["aliyun"] } },
+  // 自定义短信 Webhook
+  { key: "sms_custom_webhook", secret: true, label: "短信 Webhook 地址", group: "sms", showIf: { key: "sms_vendor", in: ["custom"] } },
+  { key: "sms_custom_token", secret: true, label: "短信 Webhook Token（可选）", group: "sms", showIf: { key: "sms_vendor", in: ["custom"] } },
+
+  /* ---- 隐私号：多平台 ---- */
+  { key: "privacy_enabled_global", secret: false, label: "启用隐私号呼叫", def: "true", group: "privacy_call", type: "bool" },
+  { key: "privacy_vendor", secret: false, label: "隐私号服务商", def: "custom", group: "privacy_call", type: "select", options: PRIVACY_VENDOR_OPTIONS },
+  // 自定义 Webhook（可对接任意平台 / 云函数中转）
+  { key: "privacy_call_webhook_url", secret: true, label: "隐私号 Webhook 地址", group: "privacy_call", showIf: { key: "privacy_vendor", in: ["custom"] } },
+  { key: "privacy_call_webhook_token", secret: true, label: "隐私号 Webhook Token（可选）", group: "privacy_call", showIf: { key: "privacy_vendor", in: ["custom"] } },
+  // 腾讯云号码保护（AXB 绑定，Action/版本可自行调整）
+  { key: "privacy_tencent_action", secret: false, label: "腾讯云号码保护 Action", def: "BindNumber", group: "privacy_call", showIf: { key: "privacy_vendor", in: ["tencent"] } },
+  { key: "privacy_tencent_version", secret: false, label: "腾讯云号码保护 API 版本", def: "2021-02-22", group: "privacy_call", showIf: { key: "privacy_vendor", in: ["tencent"] } },
+  { key: "privacy_tencent_pool_key", secret: false, label: "号码池 Key（PoolKey，可选）", group: "privacy_call", showIf: { key: "privacy_vendor", in: ["tencent"] } },
+  // 阿里云号码隐私保护
+  { key: "privacy_aliyun_action", secret: false, label: "阿里云号码保护 Action", def: "BindAxb", group: "privacy_call", showIf: { key: "privacy_vendor", in: ["aliyun"] } },
+  { key: "privacy_aliyun_pool_key", secret: false, label: "号码池 Key（PoolKey，可选）", group: "privacy_call", showIf: { key: "privacy_vendor", in: ["aliyun"] } },
+
+  /* ---- 直拨（隐私号不可用时的回退） ---- */
+  {
+    key: "direct_call_enabled_global",
+    secret: false,
+    label: "隐私号未开通时允许直拨",
+    def: "true",
+    group: "direct_call",
+    type: "bool",
+  },
+
+  /* ---- 其他 ---- */
+  { key: "tencent_ocr_region", secret: false, label: "OCR 地域", def: "ap-guangzhou", group: "other" },
+  { key: "ocr_demo_mode", secret: false, label: "OCR 演示模式", def: "false", group: "other", type: "bool" },
+  { key: "ocr_demo_plate", secret: false, label: "OCR 演示车牌", def: "粤B12345", group: "other" },
+  { key: "default_phone_country_code", secret: false, label: "默认手机区号", def: "+86", group: "other" },
 ];
 const SETTING_MAP = Object.fromEntries(GLOBAL_SETTINGS.map((s) => [s.key, s]));
 
@@ -78,6 +142,8 @@ function matchRoute(method, pathname) {
     ["POST", /^\/api\/vehicles$/, handleCreateVehicle],
     ["GET", /^\/api\/vehicles\/([^/]+)\/public$/, handlePublicVehicle, ["vehicleToken"]],
     ["POST", /^\/api\/vehicles\/([^/]+)\/notify$/, handleNotify, ["vehicleToken"]],
+    // 平台已开通的通知通道（公开，供车主端筛选）
+    ["GET", /^\/api\/channels$/, handlePublicChannels],
     // 广告位（公开读取，仅返回已启用）
     ["GET", /^\/api\/ads$/, handlePublicAds],
     // 车主（ownerToken 或 车牌+PIN）
@@ -151,23 +217,28 @@ function getAdminToken(request) {
 async function handleHealth({ env }) {
   const g = await loadGlobal(env);
   const tencentOcr = Boolean(g.tencent_secret_id && g.tencent_secret_key);
-  const tencentSms =
-    Boolean(g.tencent_secret_id && g.tencent_secret_key && g.tencent_sms_app_id && g.tencent_sms_sign_name && g.tencent_sms_template_id) &&
-    g.sms_enabled_global !== "false";
-  const privacyCall = Boolean(g.privacy_call_webhook_url) && g.privacy_enabled_global !== "false";
-  const wechatWorkGlobal = Boolean(g.wechat_work_webhook) && g.wechat_enabled_global !== "false";
-  const showdocGlobal = Boolean(g.showdoc_webhook) && g.showdoc_enabled_global !== "false";
+  const smsReady = isOn(g.sms_enabled_global) && smsVendorReady(g);
+  const privacyReady = isOn(g.privacy_enabled_global) && privacyVendorReady(g);
+  const wechatWorkGlobal = isOn(g.wechat_enabled_global) && Boolean(g.wechat_work_webhook);
+  const showdocGlobal = isOn(g.showdoc_enabled_global) && Boolean(g.showdoc_webhook);
   return json({
     status: "ok",
     d1: Boolean(env.DB),
     encryption: Boolean(env.DATA_ENCRYPTION_KEY),
     ocrDemo: usesOcrDemo(env, g),
     tencentOcr,
-    tencentSms,
-    privacyCall,
+    smsVendor: g.sms_vendor || "tencent",
+    privacyVendor: g.privacy_vendor || "custom",
+    // 兼容旧字段名
+    tencentSms: smsReady,
+    privacyCall: privacyReady,
+    sms: smsReady,
+    privacy_call: privacyReady,
     wechatWorkGlobal,
     showdocGlobal,
-    globalConfigured: Boolean(tencentSms || privacyCall || wechatWorkGlobal || showdocGlobal),
+    directCall: isOn(g.direct_call_enabled_global),
+    channels: Object.fromEntries(CHANNEL_GROUPS.map((c) => [c.key, channelOpened(g, c.key)])),
+    globalConfigured: Boolean(smsReady || privacyReady || wechatWorkGlobal || showdocGlobal),
   });
 }
 
@@ -249,6 +320,20 @@ async function handleCreateVehicle({ request, env }) {
   const input = await readJson(request);
   const validationError = validateVehicleInput(input, { requireNotification: true });
   if (validationError) return json(validationError, 400);
+  // 车主只能使用平台已开通的通知方式
+  const g = await loadGlobal(env);
+  const wanted = [];
+  if (input.wechatWorkWebhook) wanted.push("wechat_work");
+  if (input.showdocWebhook) wanted.push("showdoc");
+  if (input.smsEnabled) wanted.push("sms");
+  if (input.privacyCallEnabled) wanted.push("privacy_call");
+  const usable = wanted.filter((c) => channelOpened(g, c));
+  if (!usable.length) {
+    return json(
+      { error: "no_available_channel", message: "所选通知方式平台尚未开通，请到超级管理员后台开通后再试。" },
+      400
+    );
+  }
   const created = await insertVehicleRecord(env, input);
   return json({ vehicleToken: created.vehicleToken, ownerToken: created.ownerToken, maskedPlate: created.maskedPlate }, 201);
 }
@@ -296,13 +381,25 @@ async function insertVehicleRecord(env, input) {
    访客：公开车辆信息
    ============================================================ */
 async function handlePublicVehicle({ env, params }) {
-  assertConfig(env, ["DB"]);
+  assertConfig(env, ["DB", "DATA_ENCRYPTION_KEY"]);
   const g = await loadGlobal(env);
   const vehicle = await getVehicleByToken(env, params.vehicleToken);
   if (!vehicle) return json({ error: "not_found", message: "车辆不存在。" }, 404);
+  const channels = availableChannels(vehicle, g);
+  // 隐私号不可用时回退为直拨：仅在管理员开启直拨、且车主登记了号码时返回真实号码
+  let directCall = null;
+  if (!channels.includes("privacy_call") && isOn(g.direct_call_enabled_global) && vehicle.owner_phone_encrypted) {
+    try {
+      directCall = { enabled: true, phone: await decryptText(env, vehicle.owner_phone_encrypted) };
+    } catch {
+      directCall = null;
+    }
+  }
   return json({
     maskedPlate: vehicle.plate_number_masked,
-    availableChannels: availableChannels(vehicle, g),
+    availableChannels: channels,
+    directCall,
+    directCallEnabled: isOn(g.direct_call_enabled_global),
   });
 }
 
@@ -360,7 +457,7 @@ async function dispatchNotify(vehicle, g, env, channel) {
     if (!webhook) throw new Error("企业微信未配置");
     await sendWechatWork(webhook, vehicle);
   } else if (channel === "sms") {
-    await sendTencentSms(vehicle, env, g);
+    await sendSms(vehicle, env, g);
   } else if (channel === "privacy_call") {
     await startPrivacyCall(vehicle, env, g);
   } else {
@@ -397,6 +494,60 @@ async function sendWechatWork(webhook, vehicle) {
   if (data.errcode && data.errcode !== 0) throw new Error(`企业微信通知失败：${data.errmsg || data.errcode}`);
 }
 
+/* ---------- 短信：按服务商分发 ---------- */
+async function sendSms(vehicle, env, g) {
+  const vendor = g.sms_vendor || "tencent";
+  if (!smsVendorReady(g)) throw new Error(`短信通道未配置（服务商：${vendor}，请到超级管理员后台补全参数）`);
+  if (vendor === "aliyun") return sendAliyunSms(vehicle, env, g);
+  if (vendor === "custom") return sendCustomSms(vehicle, env, g);
+  return sendTencentSms(vehicle, env, g);
+}
+
+async function sendAliyunSms(vehicle, env, g) {
+  const phone = await decryptText(env, vehicle.owner_phone_encrypted);
+  const result = await aliyunApi(
+    {
+      accessKeyId: g.aliyun_access_key_id,
+      accessKeySecret: g.aliyun_access_key_secret,
+      regionId: g.aliyun_sms_region || "cn-hangzhou",
+    },
+    {
+      Action: "SendSms",
+      Version: "2017-05-25",
+      PhoneNumbers: toE164(phone, g.default_phone_country_code || "+86").replace("+", ""),
+      SignName: g.aliyun_sms_sign_name,
+      TemplateCode: g.aliyun_sms_template_code,
+      TemplateParam: JSON.stringify({ code: vehicle.plate_number_masked, plate: vehicle.plate_number_masked }),
+    }
+  );
+  if (result.Code && result.Code !== "OK") throw new Error(result.Message || result.Code);
+}
+
+// 自定义短信 Webhook：把发短信这件事交给任意第三方 / 云函数，参数通用
+async function sendCustomSms(vehicle, env, g) {
+  const phone = await decryptText(env, vehicle.owner_phone_encrypted);
+  const res = await fetch(g.sms_custom_webhook, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(g.sms_custom_token ? { Authorization: `Bearer ${g.sms_custom_token}` } : {}),
+    },
+    body: JSON.stringify({
+      phone,
+      maskedPlate: vehicle.plate_number_masked,
+      templateVar: vehicle.plate_number_masked,
+      purpose: "move_car_notify",
+      vendor: "custom",
+    }),
+  });
+  if (!res.ok) throw new Error(`自定义短信 Webhook 失败：${res.status}`);
+  const data = await res.json().catch(() => null);
+  if (data && data.error) throw new Error(`自定义短信 Webhook 失败：${data.error}`);
+  if (data && typeof data.error_code !== "undefined" && Number(data.error_code) !== 0) {
+    throw new Error(`自定义短信 Webhook 失败：${data.error_message || data.error_code}`);
+  }
+}
+
 async function sendTencentSms(vehicle, env, g) {
   if (!g.tencent_secret_id || !g.tencent_secret_key || !g.tencent_sms_app_id || !g.tencent_sms_sign_name || !g.tencent_sms_template_id) {
     throw new Error("短信通道未配置（缺少腾讯云短信密钥）");
@@ -422,18 +573,106 @@ async function sendTencentSms(vehicle, env, g) {
   if (status && status.Code !== "Ok") throw new Error(status.Message || status.Code);
 }
 
+/* ---------- 隐私号：按服务商分发 ---------- */
 async function startPrivacyCall(vehicle, env, g) {
-  if (!g.privacy_call_webhook_url) throw new Error("隐私号呼叫未配置");
+  const vendor = g.privacy_vendor || "custom";
+  if (!privacyVendorReady(g)) throw new Error(`隐私号通道未配置（服务商：${vendor}，请到超级管理员后台补全参数）`);
+  if (vendor === "tencent") return startTencentPrivacyCall(vehicle, env, g);
+  if (vendor === "aliyun") return startAliyunPrivacyCall(vehicle, env, g);
+  return startCustomPrivacyCall(vehicle, env, g);
+}
+
+// 自定义 Webhook：可对接任意平台（腾讯云/阿里云/第三方均可经云函数中转）
+async function startCustomPrivacyCall(vehicle, env, g) {
   const phone = await decryptText(env, vehicle.owner_phone_encrypted);
   const res = await fetch(g.privacy_call_webhook_url, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: g.privacy_call_webhook_token ? `Bearer ${g.privacy_call_webhook_token}` : "",
+      ...(g.privacy_call_webhook_token ? { Authorization: `Bearer ${g.privacy_call_webhook_token}` } : {}),
     },
-    body: JSON.stringify({ phone, maskedPlate: vehicle.plate_number_masked, vendor: "tencent", purpose: "move_car_privacy_call" }),
+    body: JSON.stringify({ phone, maskedPlate: vehicle.plate_number_masked, vendor: "custom", purpose: "move_car_privacy_call" }),
   });
   if (!res.ok) throw new Error(`隐私号呼叫失败：${res.status}`);
+}
+
+// 腾讯云号码保护（AXB 绑定）：沿用 TC3 签名，Action / 版本可在后台调整
+async function startTencentPrivacyCall(vehicle, env, g) {
+  const phone = await decryptText(env, vehicle.owner_phone_encrypted);
+  const payload = {
+    PhoneNumber: toE164(phone, g.default_phone_country_code || "+86"),
+    ...(g.privacy_tencent_pool_key ? { PoolKey: g.privacy_tencent_pool_key } : {}),
+  };
+  const result = await tencentApi(g, {
+    secretId: g.tencent_secret_id,
+    secretKey: g.tencent_secret_key,
+    service: "npp",
+    host: "npp.tencentcloudapi.com",
+    version: g.privacy_tencent_version || "2021-02-22",
+    action: g.privacy_tencent_action || "BindNumber",
+    region: g.tencent_sms_region || "ap-guangzhou",
+    payload,
+  });
+  if (result?.Error) throw new Error(result.Error.Message || "腾讯云号码保护调用失败");
+}
+
+// 阿里云号码隐私保护：标准 RPC 签名，Action 可在后台调整
+async function startAliyunPrivacyCall(vehicle, env, g) {
+  const phone = await decryptText(env, vehicle.owner_phone_encrypted);
+  const result = await aliyunApi(
+    {
+      accessKeyId: g.aliyun_access_key_id,
+      accessKeySecret: g.aliyun_access_key_secret,
+      regionId: g.aliyun_sms_region || "cn-hangzhou",
+    },
+    {
+      Action: g.privacy_aliyun_action || "BindAxb",
+      Version: "2017-05-25",
+      PhoneNoA: toE164(phone, g.default_phone_country_code || "+86").replace("+", ""),
+      ...(g.privacy_aliyun_pool_key ? { PoolKey: g.privacy_aliyun_pool_key } : {}),
+    }
+  );
+  if (result?.Code && result.Code !== "OK") throw new Error(result.Message || result.Code);
+}
+
+// 阿里云开放 API 通用签名（RPC 风格，AccessKeyId + HMAC-SHA1）
+async function aliyunApi({ accessKeyId, accessKeySecret, regionId }, params) {
+  const common = {
+    AccessKeyId: accessKeyId,
+    Format: "JSON",
+    RegionId: regionId || "cn-hangzhou",
+    SignatureMethod: "HMAC-SHA1",
+    SignatureNonce: `${Date.now()}${Math.random().toString(36).slice(2, 10)}`,
+    SignatureVersion: "1.0",
+    Timestamp: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
+    Version: params.Version || "2017-05-25",
+  };
+  const all = { ...params, ...common };
+  const canonical = Object.keys(all)
+    .sort()
+    .map((k) => `${aliyunEncode(k)}=${aliyunEncode(all[k])}`)
+    .join("&");
+  const stringToSign = `POST&${aliyunEncode("/")}&${aliyunEncode(canonical)}`;
+  const signature = bytesToBase64(await hmacRaw(`${accessKeySecret}&`, stringToSign));
+  const body = new URLSearchParams({ ...all, Signature: signature });
+  const res = await fetch("https://dysmsapi.aliyuncs.com/", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || data.Code === "InvalidAccessKeyId") {
+    throw new Error(data.Message || `阿里云接口调用失败：${res.status}`);
+  }
+  return data;
+}
+function aliyunEncode(value) {
+  return encodeURIComponent(String(value ?? ""))
+    .replace(/!/g, "%21")
+    .replace(/\*/g, "%2A")
+    .replace(/'/g, "%27")
+    .replace(/\(/g, "%28")
+    .replace(/\)/g, "%29");
 }
 
 async function tencentApi(g, { secretId, secretKey, service, host, version, action, region, payload }) {
@@ -509,11 +748,20 @@ async function handleOwnerVehicle({ env, params }) {
     hasShowdocToken: Boolean(vehicle.showdoc_token_encrypted),
     ownerPhoneMasked,
     hasPhone: Boolean(vehicle.owner_phone_encrypted),
+    // 平台已开通的通道：车主后台只展示这些，未开通的不出现
+    platformChannels: platformChannels(g),
+    channelMeta: CHANNEL_GROUPS.map((c) => ({
+      key: c.key,
+      label: c.label,
+      icon: c.icon,
+      opened: channelOpened(g, c.key),
+    })),
     global: {
-      sms: Boolean(g.sms_enabled_global !== "false" && g.tencent_secret_id && g.tencent_secret_key && g.tencent_sms_app_id && g.tencent_sms_sign_name && g.tencent_sms_template_id),
-      wechat: Boolean(g.wechat_enabled_global !== "false" && g.wechat_work_webhook),
-      privacy: Boolean(g.privacy_enabled_global !== "false" && g.privacy_call_webhook_url),
-      showdoc: Boolean(g.showdoc_enabled_global !== "false" && g.showdoc_webhook),
+      sms: channelOpened(g, "sms"),
+      wechat: channelOpened(g, "wechat_work"),
+      privacy: channelOpened(g, "privacy_call"),
+      showdoc: channelOpened(g, "showdoc"),
+      directCall: channelOpened(g, "direct_call"),
     },
     recentNotifications: logs.results || [],
   });
@@ -683,9 +931,31 @@ async function handleAdminConfigGet({ env }) {
     key: s.key,
     label: s.label,
     secret: s.secret,
+    group: s.group || "other",
+    type: s.type || "text",
+    options: s.options || null,
+    showIf: s.showIf || null,
     value: s.secret ? (g[s.key] ? "••••••" : "") : (g[s.key] ?? s.def ?? ""),
   }));
-  return json({ settings });
+  return json({
+    settings,
+    groups: CHANNEL_GROUPS,
+    // 每个通道的开通状态，便于后台直接展示「已开通 / 未开通」
+    channelStatus: Object.fromEntries(CHANNEL_GROUPS.map((c) => [c.key, channelOpened(g, c.key)])),
+  });
+}
+
+/* ============================================================
+   公开：平台已开通的通知通道（车主后台 / 创建页据此筛选可选项）
+   ============================================================ */
+async function handlePublicChannels({ env }) {
+  const g = await loadGlobal(env);
+  const opened = platformChannels(g);
+  return json({
+    channels: Object.fromEntries(CHANNEL_GROUPS.map((c) => [c.key, channelOpened(g, c.key)])),
+    available: opened,
+    groups: CHANNEL_GROUPS.map((c) => ({ key: c.key, label: c.label, icon: c.icon })),
+  });
 }
 
 async function handleAdminConfigPut({ request, env }) {
@@ -1058,19 +1328,49 @@ async function loadGlobal(env) {
   return map;
 }
 
+function isOn(value, def = true) {
+  const v = String(value ?? (def ? "true" : "false")).trim().toLowerCase();
+  return v !== "false" && v !== "0" && v !== "off" && v !== "no";
+}
+
+// 短信服务商参数是否配置完整
+function smsVendorReady(g) {
+  const v = g.sms_vendor || "tencent";
+  if (v === "tencent") return !!(g.tencent_secret_id && g.tencent_secret_key && g.tencent_sms_app_id && g.tencent_sms_sign_name && g.tencent_sms_template_id);
+  if (v === "aliyun") return !!(g.aliyun_access_key_id && g.aliyun_access_key_secret && g.aliyun_sms_sign_name && g.aliyun_sms_template_code);
+  if (v === "custom") return !!g.sms_custom_webhook;
+  return false;
+}
+// 隐私号服务商参数是否配置完整
+function privacyVendorReady(g) {
+  const v = g.privacy_vendor || "custom";
+  if (v === "custom") return !!g.privacy_call_webhook_url;
+  if (v === "tencent") return !!(g.tencent_secret_id && g.tencent_secret_key);
+  if (v === "aliyun") return !!(g.aliyun_access_key_id && g.aliyun_access_key_secret);
+  return false;
+}
+
+// 管理员是否在后台「开通」了某通道（开关 + 服务商参数齐全）
+function channelOpened(g, ch) {
+  if (ch === "wechat_work") return isOn(g.wechat_enabled_global);
+  if (ch === "showdoc") return isOn(g.showdoc_enabled_global);
+  if (ch === "sms") return isOn(g.sms_enabled_global) && smsVendorReady(g);
+  if (ch === "privacy_call") return isOn(g.privacy_enabled_global) && privacyVendorReady(g);
+  if (ch === "direct_call") return isOn(g.direct_call_enabled_global);
+  return false;
+}
+
+// 平台已开通的通道（供车主后台 / 创建页筛选可选项）
+function platformChannels(g) {
+  return ["wechat_work", "showdoc", "sms", "privacy_call"].filter((c) => channelOpened(g, c));
+}
+
 function availableChannels(vehicle, g) {
   const channels = [];
-  if ((vehicle.wechat_work_webhook_encrypted || (g.wechat_work_webhook && g.wechat_enabled_global !== "false"))) channels.push("wechat_work");
-  if ((vehicle.showdoc_webhook || (g.showdoc_webhook && g.showdoc_enabled_global !== "false"))) channels.push("showdoc");
-  if (
-    g.sms_enabled_global !== "false" &&
-    g.tencent_secret_id && g.tencent_secret_key && g.tencent_sms_app_id && g.tencent_sms_sign_name && g.tencent_sms_template_id &&
-    vehicle.sms_enabled && vehicle.owner_phone_encrypted
-  ) channels.push("sms");
-  if (
-    g.privacy_enabled_global !== "false" && g.privacy_call_webhook_url &&
-    vehicle.privacy_call_enabled && vehicle.owner_phone_encrypted
-  ) channels.push("privacy_call");
+  if (channelOpened(g, "wechat_work") && (vehicle.wechat_work_webhook_encrypted || g.wechat_work_webhook)) channels.push("wechat_work");
+  if (channelOpened(g, "showdoc") && (vehicle.showdoc_webhook || g.showdoc_webhook)) channels.push("showdoc");
+  if (channelOpened(g, "sms") && vehicle.sms_enabled && vehicle.owner_phone_encrypted) channels.push("sms");
+  if (channelOpened(g, "privacy_call") && vehicle.privacy_call_enabled && vehicle.owner_phone_encrypted) channels.push("privacy_call");
   return channels;
 }
 
@@ -1205,6 +1505,11 @@ async function sha256Hex(value) {
 }
 async function hmac(key, value) {
   const cryptoKey = await crypto.subtle.importKey("raw", typeof key === "string" ? new TextEncoder().encode(key) : key, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  return new Uint8Array(await crypto.subtle.sign("HMAC", cryptoKey, new TextEncoder().encode(value)));
+}
+// 阿里云 RPC 签名需要 HMAC-SHA1
+async function hmacRaw(key, value) {
+  const cryptoKey = await crypto.subtle.importKey("raw", typeof key === "string" ? new TextEncoder().encode(key) : key, { name: "HMAC", hash: "SHA-1" }, false, ["sign"]);
   return new Uint8Array(await crypto.subtle.sign("HMAC", cryptoKey, new TextEncoder().encode(value)));
 }
 function bytesToHex(bytes) { return [...bytes].map((b) => b.toString(16).padStart(2, "0")).join(""); }
