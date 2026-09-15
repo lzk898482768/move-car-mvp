@@ -39,7 +39,7 @@ export function hasApiBase() {
 // 统一请求封装
 async function request(path, { method = "GET", body } = {}) {
   const base = getApiBase();
-  if (!base) {
+  if (!base && !isSameOrigin()) {
     const err = new Error("未配置后端地址（API Base）。");
     err.code = "NO_API_BASE";
     throw err;

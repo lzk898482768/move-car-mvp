@@ -1,37 +1,35 @@
-name: Deploy GitHub Pages
+name: Deploy Cloudflare Pages (Frontend)
 
 on:
   push:
     branches: ["main"]
+    paths:
+      - "public/**"
+      - "functions/**"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/pages.yml"
   workflow_dispatch:
-
-permissions:
-  contents: read
-  pages: write
-  id-token: write
-
-concurrency:
-  group: "pages"
-  cancel-in-progress: false
 
 jobs:
   deploy:
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Pages
-        uses: actions/configure-pages@v5
-
-      - name: Upload static site
-        uses: actions/upload-pages-artifact@v3
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
-          path: public
+          node-version: 22
 
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
+      - name: Install dependencies
+        run: npm install
+
+      - name: Deploy to Cloudflare Pages
+        # 通过 wrangler 把 public/（含 functions/ 中的 Pages Function）部署到 Cloudflare Pages。
+        # 服务绑定 MOVE_CAR_API 已在 Cloudflare 控制台/API 配置好，无需在此声明。
+        run: npx wrangler pages deploy public --project-name move-car-frontend --branch main
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
