@@ -234,24 +234,32 @@ function setupBindPage() {
   // 组件挂载成功后接管并隐藏原生 input，值始终同步回 input，保证任何情况下都能读到
   const plateInput = createPlateInput($("#plateNumberHost"), { input: $("#plateNumber"), allowTypeSwitch: true });
 
-  // 通知方式始终全部展示（不因平台未开通而隐藏），仅在未开通时标注「平台未开通」
+  // 与后台实时同步：后台未开通的通道，前台不显示
   const opened = { privacy_call: true, sms: true, notify_all: true, direct_call: true };
   const applyOpened = () => {
-    const mark = (name, on) => $$(`[data-channel="${name}"]`, form).forEach((el) => {
-      el.classList.remove("hidden");
-      el.classList.toggle("is-unopened", !on);
-      const note = el.querySelector(".chan-unopened");
-      if (note) note.classList.toggle("hidden", on);
-    });
-    mark("privacy_call", opened.privacy_call);
-    mark("sms", opened.sms);
-    mark("notify_all", opened.notify_all);
-    mark("direct_call", opened.direct_call);
+    const show = (name, on) => $$(`[data-channel="${name}"]`, form).forEach((el) => el.classList.toggle("hidden", !on));
+    show("privacy_call", opened.privacy_call);
+    show("sms", opened.sms);
+    show("notify_all", opened.notify_all);
+    show("direct_call", opened.direct_call);
     // 直拨为默认方式；只要有一种可用方式即可创建
     const anyMethod = opened.privacy_call || opened.sms || opened.notify_all || opened.direct_call;
     $("#noChannelNote")?.classList.toggle("hidden", anyMethod);
     const submit = $('button[type="submit"]', form);
     if (submit) submit.disabled = !anyMethod;
+  };
+  // 拉取后台通道开关状态：后台改开关后，前台回到本页即自动显示/隐藏
+  const refreshChannels = async () => {
+    try {
+      const r = await api.publicChannels();
+      const ch = r.channels || {};
+      opened.privacy_call = ch.privacy_call === true;
+      opened.sms = ch.sms === true;
+      // 一键通知：企微或微信任一开通即可用
+      opened.notify_all = Boolean(ch.wechat_work || ch.wechat);
+      opened.direct_call = ch.direct_call !== false;
+      applyOpened();
+    } catch {}
   };
   // 直拨 / 隐私拨号 联动：开启隐私拨号 → 直拨自动关闭
   const syncCallMode = () => {
@@ -270,18 +278,10 @@ function setupBindPage() {
   form.privacyCallEnabled?.addEventListener("change", syncCallMode);
   syncCallMode();
   applyOpened();
-
-  api.publicChannels()
-    .then((r) => {
-      const ch = r.channels || {};
-      if (typeof ch.privacy_call === "boolean") opened.privacy_call = ch.privacy_call;
-      if (typeof ch.sms === "boolean") opened.sms = ch.sms;
-      // 一键通知：企微或微信任一开通即可用
-      opened.notify_all = Boolean(ch.wechat_work || ch.wechat);
-      opened.direct_call = ch.direct_call !== false;
-      applyOpened();
-    })
-    .catch(() => {});
+  refreshChannels();
+  // 后台改完通道后无需重开页面：切回本页 / 重新聚焦时自动同步
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshChannels(); });
+  window.addEventListener("focus", refreshChannels);
 
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
@@ -582,11 +582,25 @@ function renderTokenPicker() {
 function setupOwnerPage() {
   const mount = $("#ownerMount");
   if (!mount) return;
+  let currentToken = "";
 
   resolveOwnerToken().then(async (token) => {
     if (!token) { renderTokenPicker(); return; }
+    currentToken = token;
     await renderDashboard(token);
   });
+
+  // 后台改了通道开关后，切回本页自动同步（若正在填写表单则不打断）
+  const syncOnReturn = () => {
+    if (document.hidden || !currentToken) return;
+    const typing = $$("input, textarea", mount).some(
+      (el) => el.type !== "checkbox" && String(el.value || "").trim()
+    );
+    if (typing) return;
+    renderDashboard(currentToken);
+  };
+  document.addEventListener("visibilitychange", syncOnReturn);
+  window.addEventListener("focus", syncOnReturn);
 }
 
 async function renderDashboard(ownerToken) {
@@ -866,7 +880,7 @@ const CHANNEL_GROUPS_FALLBACK = [
 
 /* ---------------- 统一通知配置面板渲染 ---------------- */
 // 按「通道分组」渲染：每通道一个开关 + 服务商下拉 + 条件显示的字段
-function renderChannelConfig(settings, groups, status = {}) {
+function renderChannelConfig(settings, groups, status = {}, enabled = {}, missing = {}) {
   const byKey = Object.fromEntries((settings || []).map((s) => [s.key, s]));
   const valOf = (key) => String(byKey[key]?.value ?? "").trim();
 
@@ -901,6 +915,17 @@ function renderChannelConfig(settings, groups, status = {}) {
     const items = (settings || []).filter((s) => (s.group || "other") === grp.key && s.type !== "bool");
     const bools = (settings || []).filter((s) => (s.group || "other") === grp.key && s.type === "bool");
     const opened = Boolean(status[grp.key]);
+    const on = enabled[grp.key] === undefined ? opened : Boolean(enabled[grp.key]);
+    const miss = missing[grp.key] || [];
+    // 开关已开但还缺参数 → 明确告诉管理员「还缺什么」，避免「开了开关前台却没有」
+    const badge = opened
+      ? `<span class="pill ok"><span class="dot"></span>已开通</span>`
+      : (on && miss.length
+          ? `<span class="pill warn"><span class="dot"></span>缺参数</span>`
+          : `<span class="pill off"><span class="dot"></span>未开通</span>`);
+    const missLine = (!opened && on && miss.length)
+      ? `<div class="cfg-missing">开关已打开，但要生效还需填写：<b>${miss.map((m) => escapeHtml(m)).join("、")}</b></div>`
+      : (!opened && !on ? `<div class="cfg-missing muted-line">通道已关闭，前台不会显示该通知方式</div>` : "");
     return `<div class="chan-card ${opened ? "on" : "off"}">
       <div class="chan-head">
         <span class="chan-ic">${escapeHtml(grp.icon || "🔔")}</span>
@@ -908,8 +933,9 @@ function renderChannelConfig(settings, groups, status = {}) {
           <b>${escapeHtml(grp.label)}</b>
           <span class="field-hint">${CHANNEL_HINTS[grp.key] || ""}</span>
         </div>
-        <span class="pill ${opened ? "ok" : "off"}"><span class="dot"></span>${opened ? "已开通" : "未开通"}</span>
+        ${badge}
       </div>
+      ${missLine}
       <div class="grid-form">
         ${bools.map(fieldHtml).join("")}
         ${items.map(fieldHtml).join("")}
@@ -1015,6 +1041,8 @@ async function renderAdminConsole(token) {
   let ads = [];
   let channelGroups = CHANNEL_GROUPS_FALLBACK;
   let channelStatus = {};
+  let channelEnabled = {};
+  let channelMissing = {};
   try {
     const [r, adsRes] = await Promise.all([
       api.adminGetConfig(token),
@@ -1023,6 +1051,8 @@ async function renderAdminConsole(token) {
     settings = r.settings || [];
     channelGroups = (r.groups && r.groups.length) ? r.groups : CHANNEL_GROUPS_FALLBACK;
     channelStatus = r.channelStatus || {};
+    channelEnabled = r.channelEnabled || {};
+    channelMissing = r.channelMissing || {};
     adPositions = adsRes.positions || [];
     ads = adsRes.ads || [];
   } catch (err) {
@@ -1083,9 +1113,9 @@ async function renderAdminConsole(token) {
     <div class="admin-tab-panel hidden" data-panel="channels">
     <section class="card">
       <h2>🔔 通知渠道</h2>
-      <p class="muted">所有通知接口都在这里配置与开关。车主后台只会出现此处<b>已开通</b>的通道。密钥字段显示为 ${MASKED}，保持不变即可，填写新值才会覆盖。</p>
+      <p class="muted">所有通知接口都在这里配置与开关。<b>开关打开 + 参数齐全</b>才算「已开通」，前台（创建页 / 车主后台 / 访客页）只显示已开通的通道。密钥字段显示为 ${MASKED}，保持不变即可，填写新值才会覆盖。</p>
       <form id="adminConfigForm">
-        ${renderChannelConfig(settings, channelGroups, channelStatus)}
+        <div id="adminChannelConfigHost">${renderChannelConfig(settings, channelGroups, channelStatus, channelEnabled, channelMissing)}</div>
         <div class="actions row">
           <button type="submit" class="btn btn-primary">保存通知配置</button>
         </div>
@@ -1344,21 +1374,19 @@ async function renderAdminConsole(token) {
     showResult(result, "正在保存…");
     try {
       await api.adminPutConfig(token, payload);
-      showResult(result, "✅ 通知配置已保存，立即对所有车主生效。");
+      showResult(result, "✅ 通知配置已保存，立即对所有车主生效（前台会自动同步）。");
       toast("通知配置已保存", "ok");
-      // 刷新状态徽标（开通状态由后端根据参数完整性实时计算）
+      // 用后端最新状态重渲染通道卡片（开通状态 / 还缺哪些参数 均由后端计算）
       try {
         const fresh = await api.adminGetConfig(token);
-        const st = fresh.channelStatus || {};
-        $$(".chan-card", mount).forEach((card, i) => {
-          const key = channelGroups[i]?.key;
-          if (!key) return;
-          const on = Boolean(st[key]);
-          card.classList.toggle("on", on);
-          card.classList.toggle("off", !on);
-          const pill = $(".pill", card);
-          if (pill) { pill.className = `pill ${on ? "ok" : "off"}`; pill.innerHTML = `<span class="dot"></span>${on ? "已开通" : "未开通"}`; }
-        });
+        settings = fresh.settings || settings;
+        channelGroups = (fresh.groups && fresh.groups.length) ? fresh.groups : channelGroups;
+        channelStatus = fresh.channelStatus || {};
+        channelEnabled = fresh.channelEnabled || {};
+        channelMissing = fresh.channelMissing || {};
+        const host = $("#adminChannelConfigHost", mount);
+        if (host) host.innerHTML = renderChannelConfig(settings, channelGroups, channelStatus, channelEnabled, channelMissing);
+        syncConfigVisibility(cfgForm);
       } catch {}
     } catch (err) {
       if (err.status === 401) { clearAdminToken(); renderAdminLogin(); return; }

@@ -29,6 +29,25 @@ const plate = `京A${stamp}`;
 const pin = "2468";
 const adminUser = `t${stamp}`;
 
+console.log("\n=== 0. 预置平台通道（企微 Webhook + 短信），否则「一键通知」无法开通 ===");
+const bootLogin = await call("POST", "/api/admin/login", { body: { username: "admin", password: "MoveCar@2026" } });
+ok("预置用管理员登录", bootLogin.status === 200, JSON.stringify(bootLogin.data));
+if (bootLogin.data?.token) {
+  const bootCfg = await call("PUT", "/api/admin/config", {
+    token: bootLogin.data.token,
+    body: {
+      wechat_work_webhook: "https://example.com/wechat-work-hook",
+      // 清掉可能被其它套件写入的公众号配置，保证本套件结果确定（微信通道关闭）
+      wechat_mp_appid: "", wechat_mp_secret: "", wechat_mp_template_id: "", wechat_mp_openid: "",
+      sms_enabled_global: "true", sms_vendor: "custom", sms_custom_webhook: "https://example.com/sms-hook",
+    },
+  });
+  ok("预置通道配置成功", bootCfg.status === 200, JSON.stringify(bootCfg.data));
+  const chk = await call("GET", "/api/channels");
+  ok("企业微信 已开通", chk.data?.channels?.wechat_work === true, JSON.stringify(chk.data?.channels));
+  ok("短信 已开通", chk.data?.channels?.sms === true, JSON.stringify(chk.data?.channels));
+}
+
 console.log("\n=== 1. 创建挪车码（含管理密码 + 企业微信/短信） ===");
 const created = await call("POST", "/api/vehicles", {
   body: {

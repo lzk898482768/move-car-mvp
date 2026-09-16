@@ -1,7 +1,8 @@
 // 扫码挪车 · Worker 后端（混合通知模型 + 超级管理员 + 车主PIN找回）
 // 通知通道：车主可在创建时自带 webhook / 手机号；未配置时回退到管理后台在 D1 配置的全局通道。
 
-const JSON_HEADERS = { "Content-Type": "application/json; charset=utf-8" };
+// 统一禁用缓存：通道开关/配置改动后，前台与后台都要能立即看到最新状态
+const JSON_HEADERS = { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store, no-cache, must-revalidate" };
 const NOTIFY_COOLDOWN_SECONDS = 120;
 const MAX_OCR_IMAGE_BYTES = 4 * 1024 * 1024;
 const ADMIN_SESSION_DAYS = 7;
@@ -230,10 +231,10 @@ function getAdminToken(request) {
 async function handleHealth({ env }) {
   const g = await loadGlobal(env);
   const tencentOcr = Boolean(g.tencent_secret_id && g.tencent_secret_key);
-  const smsReady = isOn(g.sms_enabled_global) && smsVendorReady(g);
-  const privacyReady = isOn(g.privacy_enabled_global) && privacyVendorReady(g);
-  const wechatWorkGlobal = isOn(g.wechat_enabled_global) && Boolean(g.wechat_work_webhook);
-  const wechatNotifyGlobal = isOn(g.wechat_notify_enabled_global) && wechatMpReady(g);
+  const smsReady = channelOpened(g, "sms");
+  const privacyReady = channelOpened(g, "privacy_call");
+  const wechatWorkGlobal = channelOpened(g, "wechat_work");
+  const wechatNotifyGlobal = channelOpened(g, "wechat");
   return json({
     status: "ok",
     d1: Boolean(env.DB),
@@ -1284,6 +1285,9 @@ async function handleAdminConfigGet({ env }) {
     groups: CHANNEL_GROUPS,
     // 每个通道的开通状态，便于后台直接展示「已开通 / 未开通」
     channelStatus: Object.fromEntries(CHANNEL_GROUPS.map((c) => [c.key, channelOpened(g, c.key)])),
+    // 开关状态 + 开关已开但仍缺哪些参数（后台据此提示「还缺什么」）
+    channelEnabled: Object.fromEntries(CHANNEL_GROUPS.map((c) => [c.key, channelEnabled(g, c.key)])),
+    channelMissing: Object.fromEntries(CHANNEL_GROUPS.map((c) => [c.key, channelMissingParams(g, c.key)])),
   });
 }
 
@@ -1803,14 +1807,63 @@ function wechatMpReady(g) {
   return !!(g.wechat_mp_appid && g.wechat_mp_secret && g.wechat_mp_template_id);
 }
 
-// 管理员是否在后台「开通」了某通道（开关 + 服务商参数齐全）
-function channelOpened(g, ch) {
+// 通道「启用开关」状态（超管后台的开关）
+function channelEnabled(g, ch) {
   if (ch === "wechat_work") return isOn(g.wechat_enabled_global);
-  if (ch === "wechat") return isOn(g.wechat_notify_enabled_global) && wechatMpReady(g);
-  if (ch === "sms") return isOn(g.sms_enabled_global) && smsVendorReady(g);
-  if (ch === "privacy_call") return isOn(g.privacy_enabled_global) && privacyVendorReady(g);
+  if (ch === "wechat") return isOn(g.wechat_notify_enabled_global);
+  if (ch === "sms") return isOn(g.sms_enabled_global);
+  if (ch === "privacy_call") return isOn(g.privacy_enabled_global);
   if (ch === "direct_call") return isOn(g.direct_call_enabled_global);
   return false;
+}
+
+// 开关打开后仍缺少的服务商参数（返回中文标签，供后台提示「还缺什么」）
+function channelMissingParams(g, ch) {
+  const miss = [];
+  if (ch === "wechat_work") {
+    if (!g.wechat_work_webhook) miss.push("企业微信默认 Webhook");
+  } else if (ch === "wechat") {
+    if (!g.wechat_mp_appid) miss.push("公众号 AppID");
+    if (!g.wechat_mp_secret) miss.push("公众号 AppSecret");
+    if (!g.wechat_mp_template_id) miss.push("模板消息 ID");
+  } else if (ch === "sms") {
+    const v = g.sms_vendor || "tencent";
+    if (v === "tencent") {
+      if (!g.tencent_secret_id) miss.push("腾讯云 SecretId");
+      if (!g.tencent_secret_key) miss.push("腾讯云 SecretKey");
+      if (!g.tencent_sms_app_id) miss.push("短信 SmsSdkAppId");
+      if (!g.tencent_sms_sign_name) miss.push("短信签名");
+      if (!g.tencent_sms_template_id) miss.push("短信模板 ID");
+    } else if (v === "aliyun") {
+      if (!g.aliyun_access_key_id) miss.push("阿里云 AccessKeyId");
+      if (!g.aliyun_access_key_secret) miss.push("阿里云 AccessKeySecret");
+      if (!g.aliyun_sms_sign_name) miss.push("短信签名");
+      if (!g.aliyun_sms_template_code) miss.push("短信模板 CODE");
+    } else if (v === "custom") {
+      if (!g.sms_custom_webhook) miss.push("短信 Webhook 地址");
+    } else {
+      miss.push("短信服务商");
+    }
+  } else if (ch === "privacy_call") {
+    const v = g.privacy_vendor || "custom";
+    if (v === "custom") {
+      if (!g.privacy_call_webhook_url) miss.push("隐私号 Webhook 地址");
+    } else if (v === "tencent") {
+      if (!g.tencent_secret_id) miss.push("腾讯云 SecretId");
+      if (!g.tencent_secret_key) miss.push("腾讯云 SecretKey");
+    } else if (v === "aliyun") {
+      if (!g.aliyun_access_key_id) miss.push("阿里云 AccessKeyId");
+      if (!g.aliyun_access_key_secret) miss.push("阿里云 AccessKeySecret");
+    } else {
+      miss.push("隐私号服务商");
+    }
+  }
+  return miss;
+}
+
+// 管理员是否在后台真正「开通」了某通道 = 开关打开 + 服务商参数齐全
+function channelOpened(g, ch) {
+  return channelEnabled(g, ch) && channelMissingParams(g, ch).length === 0;
 }
 
 // 平台已开通的通道（供车主后台 / 创建页筛选可选项）

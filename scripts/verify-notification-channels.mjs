@@ -33,6 +33,7 @@ const reset = await call("PUT", "/api/admin/config", {
     aliyun_access_key_id: "", aliyun_access_key_secret: "", aliyun_sms_sign_name: "", aliyun_sms_template_code: "",
     sms_custom_webhook: "", sms_custom_token: "",
     privacy_call_webhook_url: "", privacy_call_webhook_token: "",
+    wechat_work_webhook: "",
     wechat_mp_appid: "", wechat_mp_secret: "", wechat_mp_template_id: "", wechat_mp_openid: "",
     sms_vendor: "tencent", privacy_vendor: "custom",
     sms_enabled_global: "true", privacy_enabled_global: "true", direct_call_enabled_global: "true",
@@ -40,16 +41,26 @@ const reset = await call("PUT", "/api/admin/config", {
 });
 ok("清空各服务商参数", reset.status === 200);
 ch = await call("GET", "/api/channels");
-ok("干净状态下 sms / privacy / wechat 均未开通",
-  ch.data.channels.sms === false && ch.data.channels.privacy_call === false && ch.data.channels.wechat === false,
+ok("干净状态下 wechat_work / sms / privacy / wechat 均未开通",
+  ch.data.channels.wechat_work === false && ch.data.channels.sms === false && ch.data.channels.privacy_call === false && ch.data.channels.wechat === false,
   JSON.stringify(ch.data.channels));
 
-console.log("\n=== 2. 平台通道查询（公开接口） ===");
+console.log("\n=== 2. 平台通道查询（公开接口）+ 后台「还缺什么」提示 ===");
 ch = await call("GET", "/api/channels");
 ok("/api/channels 200", ch.status === 200);
 ok("返回 5 个通道状态", ["wechat_work", "wechat", "sms", "privacy_call", "direct_call"].every((k) => typeof ch.data.channels[k] === "boolean"), JSON.stringify(ch.data.channels));
-ok("企业微信默认开通（开关默认 true）", ch.data.channels.wechat_work === true);
 ok("返回通道分组元信息", Array.isArray(ch.data.groups) && ch.data.groups.length === 5);
+// 开关打开 ≠ 已开通：企微还缺 Webhook
+const cfg0 = await call("GET", "/api/admin/config", { token });
+ok("后台返回 channelEnabled", cfg0.data?.channelEnabled?.wechat_work === true, JSON.stringify(cfg0.data?.channelEnabled));
+ok("开关开着但缺 Webhook → channelMissing 列出缺项", (cfg0.data?.channelMissing?.wechat_work || []).some((x) => x.includes("Webhook")), JSON.stringify(cfg0.data?.channelMissing?.wechat_work));
+ok("缺参数时不算已开通", cfg0.data?.channelStatus?.wechat_work === false);
+// 补上 Webhook → 开通
+await call("PUT", "/api/admin/config", { token, body: { wechat_work_webhook: "https://example.com/wechat-work-hook" } });
+ch = await call("GET", "/api/channels");
+ok("补全 Webhook 后 企业微信 开通", ch.data.channels.wechat_work === true, JSON.stringify(ch.data.channels));
+const cfg1 = await call("GET", "/api/admin/config", { token });
+ok("开通后 channelMissing 为空", (cfg1.data?.channelMissing?.wechat_work || []).length === 0, JSON.stringify(cfg1.data?.channelMissing?.wechat_work));
 
 console.log("\n=== 3. 短信：切换服务商 + 开关 ===");
 // 3.1 关闭短信 → 未开通

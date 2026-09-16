@@ -726,5 +726,11 @@ body.kb-open { overflow: hidden; }
 /* 直拨被隐私拨号接管时置灰 */
 .switch-row.is-off { opacity: .55; }
 
-/* 平台未开通的通道：仍然展示开关，仅加一行小字提示 */
-.chan-unopened { color: #b45309; font-size: 12px; margin-top: 2px; }
+/* 后台通道卡片：开关已开但缺参数时的提示 */
+.cfg-missing {
+  margin: 0 0 12px; padding: 8px 12px; border-radius: 10px;
+  background: rgba(245, 158, 11, .12); border: 1px solid rgba(245, 158, 11, .3);
+  color: #b45309; font-size: 12.5px; line-height: 1.5;
+}
+.cfg-missing b { color: #92400e; }
+.cfg-missing.muted-line { background: rgba(16, 60, 40, .05); border-color: var(--border); color: var(--text-mute); }

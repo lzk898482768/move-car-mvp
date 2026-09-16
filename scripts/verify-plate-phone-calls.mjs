@@ -25,6 +25,8 @@ const login = await call("POST", "/api/admin/login", { body: { username: "admin"
 ok("登录成功", login.status === 200, JSON.stringify(login.data));
 const adminToken = login.data?.token;
 if (!adminToken) { console.log("无管理员令牌，终止"); process.exit(1); }
+// 预置企微 Webhook，使「一键通知」通道处于已开通状态（否则创建会被拒）
+await call("PUT", "/api/admin/config", { token: adminToken, body: { wechat_work_webhook: "https://example.com/wechat-work-hook" } });
 
 console.log("\n=== 2. 手机号必填 ===");
 const noPhone = await call("POST", "/api/vehicles", { body: { plateNumber: `鲁B${stamp}`, notifyAllEnabled: true } });
