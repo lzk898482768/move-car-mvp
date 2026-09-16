@@ -26,10 +26,10 @@ const PRIVACY_VENDOR_OPTIONS = [
 // 通道分组（决定超管后台的分区与「是否开通」状态）
 const CHANNEL_GROUPS = [
   { key: "wechat_work", label: "企业微信机器人", icon: "💬" },
-  { key: "wechat", label: "微信通知", icon: "📨" },
+  { key: "wechat", label: "微信通知（公众号模板消息）", icon: "📨" },
   { key: "sms", label: "短信通知", icon: "📱" },
-  { key: "privacy_call", label: "隐私号呼叫", icon: "☎️" },
-  { key: "direct_call", label: "直拨车主（回退）", icon: "📞" },
+  { key: "privacy_call", label: "隐私拨号", icon: "☎️" },
+  { key: "direct_call", label: "直拨（默认）", icon: "📞" },
 ];
 
 // 全局通知配置项的元数据。secret=true 的值在 D1 中以 AES-GCM 加密存储。
