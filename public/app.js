@@ -234,14 +234,19 @@ function setupBindPage() {
   // 组件挂载成功后接管并隐藏原生 input，值始终同步回 input，保证任何情况下都能读到
   const plateInput = createPlateInput($("#plateNumberHost"), { input: $("#plateNumber"), allowTypeSwitch: true });
 
-  // 平台已开通的通道：未开通的直接隐藏（接口失败时保持全部可见，不阻断使用）
+  // 通知方式始终全部展示（不因平台未开通而隐藏），仅在未开通时标注「平台未开通」
   const opened = { privacy_call: true, sms: true, notify_all: true, direct_call: true };
   const applyOpened = () => {
-    const show = (name, on) => $$(`[data-channel="${name}"]`, form).forEach((el) => el.classList.toggle("hidden", !on));
-    show("privacy_call", opened.privacy_call);
-    show("sms", opened.sms);
-    show("notify_all", opened.notify_all);
-    show("direct_call", opened.direct_call);
+    const mark = (name, on) => $$(`[data-channel="${name}"]`, form).forEach((el) => {
+      el.classList.remove("hidden");
+      el.classList.toggle("is-unopened", !on);
+      const note = el.querySelector(".chan-unopened");
+      if (note) note.classList.toggle("hidden", on);
+    });
+    mark("privacy_call", opened.privacy_call);
+    mark("sms", opened.sms);
+    mark("notify_all", opened.notify_all);
+    mark("direct_call", opened.direct_call);
     // 直拨为默认方式；只要有一种可用方式即可创建
     const anyMethod = opened.privacy_call || opened.sms || opened.notify_all || opened.direct_call;
     $("#noChannelNote")?.classList.toggle("hidden", anyMethod);

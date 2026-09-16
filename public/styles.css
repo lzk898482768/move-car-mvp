@@ -725,3 +725,6 @@ body.kb-open { overflow: hidden; }
 
 /* 直拨被隐私拨号接管时置灰 */
 .switch-row.is-off { opacity: .55; }
+
+/* 平台未开通的通道：仍然展示开关，仅加一行小字提示 */
+.chan-unopened { color: #b45309; font-size: 12px; margin-top: 2px; }
