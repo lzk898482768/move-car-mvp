@@ -1,7 +1,7 @@
 // 扫码挪车 · 前端主逻辑（Worker 版）
 import {
   api, getApiBase, hasApiBase, setApiBase,
-  buildMoveUrl, qrImageUrl,
+  buildMoveUrl, buildQrUrl, qrImageUrl,
   saveOwnerToken, loadOwnerTokens, clearOwnerToken,
   saveAdminToken, loadAdminToken, clearAdminToken,
 } from "./api.js";
@@ -231,6 +231,22 @@ function setupBindPage() {
   const form = $("#bindForm");
   const result = $("#bindResult");
   if (!form) return;
+  // 后台预生成二维码的绑定模式：/index.html?c=<codeToken>
+  const bindCode = new URLSearchParams(location.search).get("c") || "";
+  if (bindCode) {
+    const panel = form.closest(".panel");
+    panel?.insertAdjacentHTML(
+      "afterbegin",
+      `<div class="notice" style="margin-bottom:14px">
+         <b>📱 正在绑定这个挪车二维码</b>
+         <div class="t" style="margin-top:6px">填写车牌与手机号即可完成绑定；绑定后任何人再扫这个码都会直接进入挪车界面。</div>
+       </div>`
+    );
+    const title = document.querySelector(".hero-banner .hb-title");
+    if (title) title.innerHTML = "绑定<br /><em>挪车二维码</em>";
+    const submitBtn = form.querySelector('button[type="submit"]');
+    if (submitBtn) submitBtn.textContent = "绑定并生成挪车码";
+  }
   // 组件挂载成功后接管并隐藏原生 input，值始终同步回 input，保证任何情况下都能读到
   const plateInput = createPlateInput($("#plateNumberHost"), { input: $("#plateNumber"), allowTypeSwitch: true });
 
@@ -305,14 +321,15 @@ function setupBindPage() {
         throw new Error("平台尚未开通任何通知方式，请联系管理员。");
       }
 
-      const data = await api.createVehicle({
+      const payload = {
         plateNumber: plate,
         ownerPhone,
         privacyCallEnabled,
         smsEnabled,
         notifyAllEnabled,
         ownerPin,
-      });
+      };
+      const data = bindCode ? await api.qrBind(bindCode, payload) : await api.createVehicle(payload);
       saveOwnerToken(data.ownerToken, data.maskedPlate);
 
       const moveUrl = buildMoveUrl(data.vehicleToken);
@@ -320,7 +337,7 @@ function setupBindPage() {
       showResult(
         result,
         `<div class="fade-in qr-wrap">
-          <div class="pill ok"><span class="dot"></span>挪车码已生成</div>
+          <div class="pill ok"><span class="dot"></span>${bindCode ? "二维码绑定成功" : "挪车码已生成"}</div>
           <div class="hero-plate"><div class="plate">${escapeHtml(data.maskedPlate)}</div></div>
           <div class="qr"><img src="${qrImageUrl(moveUrl)}" alt="挪车二维码" /></div>
           <div class="muted">访客扫码即可匿名通知你挪车</div>
@@ -378,21 +395,66 @@ function setupBindPage() {
    ============================================================ */
 function setupMovePage() {
   const params = new URLSearchParams(location.search);
-  const token = params.get("token");
+  const codeToken = params.get("c");          // 后台预生成的二维码
+  const vehicleTokenParam = params.get("token"); // 直接带车辆令牌（旧链接）
   const vehicleEl = $("#publicVehicle");
   const resultEl = $("#contactResult");
   const channelsEl = $("#channelPicker");
   const notifyBtn = $("#notifyButton");
 
-  if (!token) {
-    showResult(vehicleEl, "二维码内容缺失，请重新生成挪车二维码。", true);
+  if (!codeToken && !vehicleTokenParam) {
+    showResult(vehicleEl, "二维码内容缺失，请重新生成或扫描挪车二维码。", true);
     if (notifyBtn) notifyBtn.disabled = true;
     return;
   }
 
   let selectedChannel = ""; // 空 = 后端默认
+  let token = vehicleTokenParam || "";
+
+  // 后台预生成码：未绑定时引导车主绑定
+  function renderBindPrompt() {
+    if (notifyBtn) { notifyBtn.disabled = true; notifyBtn.classList.add("hidden"); }
+    $("#directCallButton")?.classList.add("hidden");
+    $("#directCallNote")?.classList.add("hidden");
+    $("#callerBox")?.classList.add("hidden");
+    if (channelsEl) channelsEl.innerHTML = "";
+    const bindUrl = (() => {
+      const u = new URL("./index.html", location.href);
+      u.searchParams.set("c", codeToken);
+      return u.toString();
+    })();
+    showResult(
+      resultEl,
+      `<div class="notice" style="text-align:left">
+         <b>这个挪车码还没有绑定车辆</b>
+         <div class="t" style="margin-top:6px">如果你是车主：点下面的按钮，填好车牌和手机号即可完成绑定。绑定后任何人再扫这个码，都会直接进入挪车界面。</div>
+         <a class="btn btn-primary" style="margin-top:12px;display:block;text-align:center" href="${escapeHtml(bindUrl)}">车主：绑定此二维码</a>
+       </div>`
+    );
+    showResult(vehicleEl, `<div class="qr-state">待绑定</div><p class="privacy-note">此二维码尚未绑定车辆，暂时无法呼叫车主。</p>`);
+  }
+
+  function renderQrError(msg) {
+    if (notifyBtn) { notifyBtn.disabled = true; notifyBtn.classList.add("hidden"); }
+    $("#directCallButton")?.classList.add("hidden");
+    $("#callerBox")?.classList.add("hidden");
+    showResult(vehicleEl, escapeHtml(msg || "二维码无效。"), true);
+    showResult(resultEl, "如二维码损坏，请联系车主或平台重新补发。");
+  }
 
   async function load() {
+    // 预生成码：先解析（已绑定 → 拿到车辆令牌进挪车界面；未绑定 → 引导车主绑定）
+    if (!token && codeToken) {
+      showResult(vehicleEl, "正在读取二维码…");
+      try {
+        const r = await api.qrResolve(codeToken);
+        if (r.status === "bound" && r.vehicleToken) token = r.vehicleToken;
+        else { renderBindPrompt(); return; }
+      } catch (err) {
+        renderQrError(err.message);
+        return;
+      }
+    }
     try {
       const v = await api.getPublicVehicle(token);
       const chs = v.availableChannels || [];
@@ -410,10 +472,19 @@ function setupMovePage() {
       if (directBtn && dc?.enabled && dc.phone) {
         directBtn.href = `tel:${dc.phone}`;
         directBtn.classList.remove("hidden");
-        directNote?.classList.remove("hidden");
-        // 直拨为默认方式 → 设为主要操作
+        // 直拨为默认方式 → 设为主要操作，并把它排到最前
         directBtn.classList.add("btn-primary");
-        if (notifyBtn) { notifyBtn.textContent = "通知车主（短信 / 消息）"; notifyBtn.classList.remove("btn-primary"); }
+        if (notifyBtn) {
+          notifyBtn.textContent = "通知车主（短信 / 消息）";
+          notifyBtn.classList.remove("btn-primary");
+          notifyBtn.classList.add("btn-ghost");
+          directBtn.parentElement?.insertBefore(directBtn, notifyBtn);
+        }
+        // 说明文案：呼号按钮已置顶，这里只在需要时补充提示
+        if (directNote) {
+          directNote.textContent = "点击将调用手机拨号盘直接拨打车主号码。";
+          directNote.classList.remove("hidden");
+        }
       }
       if (chs.length === 0 && !(dc?.enabled && dc.phone)) {
         showResult(resultEl, "该车主暂未配置任何通知方式，请联系车主本人。", true);
@@ -1075,6 +1146,7 @@ async function renderAdminConsole(token) {
 
     <nav class="admin-tabs" id="adminTabs">
       <button type="button" class="admin-tab active" data-tab="vehicles">🚗 车牌管理</button>
+      <button type="button" class="admin-tab" data-tab="qr">📱 二维码</button>
       <button type="button" class="admin-tab" data-tab="channels">🔔 通知渠道</button>
       <button type="button" class="admin-tab" data-tab="lookup">🔍 查车主电话</button>
       <button type="button" class="admin-tab" data-tab="calls">📞 拨号日志</button>
@@ -1106,6 +1178,68 @@ async function renderAdminConsole(token) {
         <summary class="muted" style="cursor:pointer">导入格式说明</summary>
         <p class="field-hint" style="margin-top:8px">支持 CSV 与 JSON。CSV 表头顺序：<b>车牌号,查看密码,手机号,短信通知,隐私拨号,一键通知,微信OpenID</b>（表头行可省略；开关填「是/否」；未开启任何方式则为「直拨」）。重复车牌会自动跳过，不会覆盖已有绑定。</p>
       </details>
+    </section>
+    </div>
+
+    <!-- 预生成二维码 -->
+    <div class="admin-tab-panel hidden" data-panel="qr">
+    <section class="card">
+      <h2>📱 二维码批量生成</h2>
+      <p class="muted">批量出码 → 打印贴到车上 → 车主扫码绑定 → 绑定后任何人再扫都进入挪车界面。未绑定的码被扫到时会提示车主先绑定。</p>
+
+      <div class="qr-stats" id="qrStats"></div>
+
+      <form id="qrBatchForm" class="grid-form" style="margin-top:12px">
+        <label>生成数量（1-200）
+          <input id="qrCount" type="number" min="1" max="200" value="20" />
+        </label>
+        <label>批次号（可选）
+          <input id="qrBatchNo" placeholder="留空自动按日期生成" />
+        </label>
+        <label class="span-2">备注（可选）
+          <input id="qrNote" placeholder="如：第 1 批贴纸" />
+        </label>
+        <button type="submit" class="btn btn-primary span-2">批量生成二维码</button>
+      </form>
+      <div id="qrBatchResult" class="result hidden" style="margin-top:10px"></div>
+
+      <div id="qrBatchPreviewWrap" class="hidden" style="margin-top:16px">
+        <div class="qr-preview-head">
+          <b>本批二维码</b><span class="muted" id="qrBatchPreviewMeta"></span>
+        </div>
+        <div class="row-actions" style="margin-top:8px">
+          <button type="button" class="btn btn-sm btn-primary" id="qrPrint">🖨️ 打印本批</button>
+          <button type="button" class="btn btn-sm btn-ghost" id="qrDownloadCsv">导出链接 CSV</button>
+        </div>
+        <div id="qrBatchGrid" class="qr-grid"></div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>二维码列表</h2>
+      <div class="grid-form" style="margin-top:8px">
+        <label>状态
+          <select id="qrStatus">
+            <option value="">全部</option>
+            <option value="unbound">未绑定</option>
+            <option value="bound">已绑定</option>
+            <option value="disabled">已停用</option>
+          </select>
+        </label>
+        <label>批次
+          <select id="qrBatchFilter"><option value="">全部</option></select>
+        </label>
+        <label class="span-2">搜索
+          <input id="qrSearch" placeholder="令牌 / 批次 / 备注 / 车牌" />
+        </label>
+      </div>
+      <div class="row-actions" style="margin-top:10px">
+        <button class="btn btn-sm btn-primary" id="qrSearchBtn">查询</button>
+        <button class="btn btn-sm btn-ghost" id="qrResetBtn">重置</button>
+        <button class="btn btn-sm btn-danger" id="qrDeleteSel">删除所选（未绑定）</button>
+      </div>
+      <div id="qrListBox" style="margin-top:12px"><p class="muted">正在加载…</p></div>
+      <div id="qrListResult" class="result hidden" style="margin-top:10px"></div>
     </section>
     </div>
 
@@ -1393,6 +1527,9 @@ async function renderAdminConsole(token) {
       showResult(result, escapeHtml(err.message || "保存失败"), true);
     }
   });
+
+  // 预生成二维码
+  setupAdminQrCodes(token, mount);
 
   // 拨号日志
   setupCallLogs(token, mount);
@@ -1798,6 +1935,230 @@ function setupCallLogs(token, mount) {
   };
 
   reloadCallLogs(token, mount);
+}
+
+/* ---------------- 预生成二维码（后台） ---------------- */
+const QR_STATUS_LABEL = { unbound: "未绑定", bound: "已绑定", disabled: "已停用" };
+
+function printQrCodes(codes, batchNo) {
+  const w = window.open("", "_blank");
+  if (!w) return toast("浏览器拦截了打印窗口，请允许弹窗后重试", "err");
+  const items = codes
+    .map((c, i) => `<div class="p-item">
+      <img src="${qrImageUrl(buildQrUrl(c.codeToken), 240)}" alt="挪车二维码" />
+      <div class="p-title">扫码绑定 · 挪车码</div>
+      <div class="p-no">${escapeHtml(batchNo || c.batchNo || "")} · ${String(i + 1).padStart(3, "0")}</div>
+    </div>`)
+    .join("");
+  w.document.write(`<!doctype html><html lang="zh-CN"><head><meta charset="utf-8" />
+<title>挪车二维码 ${escapeHtml(batchNo || "")}</title>
+<style>
+  body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; margin: 0; padding: 10px; }
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+  .p-item { border: 1px dashed #cbd5e1; border-radius: 10px; padding: 10px 6px; text-align: center; page-break-inside: avoid; }
+  .p-item img { width: 100%; max-width: 200px; height: auto; }
+  .p-title { font-size: 13px; font-weight: 700; color: #16a34a; margin-top: 4px; }
+  .p-no { font-size: 11px; color: #64748b; }
+</style></head>
+<body><div class="grid">${items}</div>
+<script>window.onload=function(){setTimeout(function(){window.print();},500);};<\/script>
+</body></html>`);
+  w.document.close();
+  return undefined;
+}
+
+function setupAdminQrCodes(token, mount) {
+  const statsEl = $("#qrStats", mount);
+  const listBox = $("#qrListBox", mount);
+  const listResult = $("#qrListResult", mount);
+  const batchResult = $("#qrBatchResult", mount);
+  const gridEl = $("#qrBatchGrid", mount);
+  const previewWrap = $("#qrBatchPreviewWrap", mount);
+  const previewMeta = $("#qrBatchPreviewMeta", mount);
+  if (!statsEl || !listBox) return;
+
+  const filter = { status: "", batch: "", q: "" };
+  let lastBatch = [];
+  let lastBatchNo = "";
+  const selected = new Set();
+
+  const pill = (s) =>
+    `<span class="pill ${s === "bound" ? "ok" : s === "disabled" ? "off" : "warn"}"><span class="dot"></span>${QR_STATUS_LABEL[s] || s}</span>`;
+
+  const renderStats = (stats = {}) => {
+    statsEl.innerHTML = `
+      <div class="qr-stat"><b>${stats.total || 0}</b><span>总数</span></div>
+      <div class="qr-stat"><b>${stats.unbound || 0}</b><span>未绑定</span></div>
+      <div class="qr-stat"><b>${stats.bound || 0}</b><span>已绑定</span></div>
+      <div class="qr-stat"><b>${stats.disabled || 0}</b><span>已停用</span></div>`;
+  };
+
+  const renderList = () => {
+    const rows = listBox.__codes || [];
+    if (!rows.length) {
+      listBox.innerHTML = `<p class="muted">没有符合条件的二维码。</p>`;
+      return;
+    }
+    listBox.innerHTML = `<div class="qr-list">` +
+      rows
+        .map(
+          (c) => `<div class="qr-row">
+            <label class="qr-check"><input type="checkbox" data-qr-sel="${c.id}" ${c.status === "bound" ? "disabled" : ""} ${selected.has(c.id) ? "checked" : ""}></label>
+            <img class="qr-thumb" src="${qrImageUrl(buildQrUrl(c.codeToken), 120)}" alt="二维码" loading="lazy" />
+            <div class="qr-meta">
+              <div class="qr-line1">${pill(c.status)} <span class="muted">#${c.id}</span> ${c.maskedPlate ? `<span class="pill ok"><span class="dot"></span>${escapeHtml(c.maskedPlate)}</span>` : ""}</div>
+              <div class="t muted" style="font-size:12px">批次 ${escapeHtml(c.batchNo || "-")}${c.note ? ` · ${escapeHtml(c.note)}` : ""}</div>
+              <div class="t muted" style="font-size:11px;word-break:break-all">${escapeHtml(c.codeToken)}</div>
+            </div>
+            <div class="qr-actions">
+              ${c.status === "unbound" ? `<button class="btn btn-xs btn-ghost" data-qr-disable="${c.id}">停用</button>` : ""}
+              ${c.status === "disabled" ? `<button class="btn btn-xs btn-ghost" data-qr-enable="${c.id}">启用</button>` : ""}
+              ${c.status !== "bound" ? `<button class="btn btn-xs btn-danger" data-qr-del="${c.id}">删除</button>` : ""}
+            </div>
+          </div>`
+        )
+        .join("") +
+      `</div>`;
+
+    $$("[data-qr-sel]", listBox).forEach((box) =>
+      box.addEventListener("change", () => {
+        const id = Number(box.dataset.qrSel);
+        box.checked ? selected.add(id) : selected.delete(id);
+      })
+    );
+    $$("[data-qr-disable]", listBox).forEach((btn) =>
+      btn.addEventListener("click", () => setStatus(Number(btn.dataset.qrDisable), "disabled"))
+    );
+    $$("[data-qr-enable]", listBox).forEach((btn) =>
+      btn.addEventListener("click", () => setStatus(Number(btn.dataset.qrEnable), "unbound"))
+    );
+    $$("[data-qr-del]", listBox).forEach((btn) =>
+      btn.addEventListener("click", () => removeOne(Number(btn.dataset.qrDel)))
+    );
+  };
+
+  const renderBatchOptions = (batches) => {
+    const sel = $("#qrBatchFilter", mount);
+    if (!sel) return;
+    const cur = sel.value;
+    sel.innerHTML = `<option value="">全部</option>` +
+      (batches || []).map((b) => `<option value="${escapeHtml(b.batchNo)}">${escapeHtml(b.batchNo)}（${b.count}）</option>`).join("");
+    if (cur) sel.value = cur;
+  };
+
+  async function reload() {
+    listBox.innerHTML = `<p class="muted">正在加载…</p>`;
+    try {
+      const r = await api.adminListQrCodes(token, { ...filter, limit: 200 });
+      listBox.__codes = r.codes || [];
+      listBox.dataset.loaded = "1";
+      selected.clear();
+      renderStats(r.stats || {});
+      renderBatchOptions(r.batches || []);
+      renderList();
+    } catch (err) {
+      if (err.status === 401) { clearAdminToken(); renderAdminLogin(); return; }
+      listBox.innerHTML = `<p class="muted">加载失败：${escapeHtml(err.message || "")}</p>`;
+    }
+  }
+
+  async function setStatus(id, status) {
+    try {
+      const r = await api.adminUpdateQrCode(token, id, { status });
+      toast(r.message || "已更新", "ok");
+      await reload();
+    } catch (err) { toast(err.message || "操作失败", "err"); }
+  }
+
+  async function removeOne(id) {
+    try {
+      await api.adminDeleteQrCode(token, id);
+      toast("已删除", "ok");
+      await reload();
+    } catch (err) { toast(err.message || "删除失败", "err"); }
+  }
+
+  // 批量生成
+  $("#qrBatchForm", mount)?.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const count = Number($("#qrCount", mount).value) || 0;
+    if (count < 1 || count > 200) return toast("生成数量需在 1-200 之间", "err");
+    showResult(batchResult, "正在生成…");
+    try {
+      const r = await api.adminBatchQrCodes(token, {
+        count,
+        batchNo: $("#qrBatchNo", mount).value.trim(),
+        note: $("#qrNote", mount).value.trim(),
+      });
+      lastBatch = (r.codes || []).map((t) => ({ codeToken: t }));
+      lastBatchNo = r.batchNo || "";
+      previewWrap.classList.remove("hidden");
+      previewMeta.textContent = `批次 ${lastBatchNo} · 共 ${lastBatch.length} 个`;
+      gridEl.innerHTML = lastBatch
+        .map(
+          (c, i) => `<div class="qr-card">
+            <img src="${qrImageUrl(buildQrUrl(c.codeToken), 200)}" alt="二维码" />
+            <div class="qr-card-no">${String(i + 1).padStart(3, "0")}</div>
+          </div>`
+        )
+        .join("");
+      showResult(batchResult, `✅ ${escapeHtml(r.message || "已生成")} 可点击下方「打印本批」直接打印贴纸。`);
+      toast("二维码已生成", "ok");
+      await reload();
+    } catch (err) {
+      if (err.status === 401) { clearAdminToken(); renderAdminLogin(); return; }
+      showResult(batchResult, escapeHtml(err.message || "生成失败"), true);
+    }
+  });
+
+  $("#qrPrint", mount)?.addEventListener("click", () => {
+    if (!lastBatch.length) return toast("请先生成二维码", "err");
+    printQrCodes(lastBatch, lastBatchNo);
+  });
+
+  $("#qrDownloadCsv", mount)?.addEventListener("click", () => {
+    if (!lastBatch.length) return toast("请先生成二维码", "err");
+    const rows = [["序号", "批次", "二维码链接"]];
+    lastBatch.forEach((c, i) => rows.push([String(i + 1), lastBatchNo, buildQrUrl(c.codeToken)]));
+    const csv = rows.map((r) => r.map((x) => (/[",\n]/.test(String(x)) ? `"${String(x).replaceAll('"', '""')}"` : x)).join(",")).join("\r\n");
+    downloadFile(`move-car-qr-${lastBatchNo || "batch"}.csv`, "\ufeff" + csv);
+  });
+
+  $("#qrSearchBtn", mount)?.addEventListener("click", () => {
+    filter.status = $("#qrStatus", mount).value;
+    filter.batch = $("#qrBatchFilter", mount).value;
+    filter.q = $("#qrSearch", mount).value.trim();
+    reload();
+  });
+  $("#qrResetBtn", mount)?.addEventListener("click", () => {
+    $("#qrStatus", mount).value = "";
+    $("#qrBatchFilter", mount).value = "";
+    $("#qrSearch", mount).value = "";
+    filter.status = ""; filter.batch = ""; filter.q = "";
+    reload();
+  });
+  $("#qrSearch", mount)?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); $("#qrSearchBtn", mount).click(); }
+  });
+  $("#qrDeleteSel", mount)?.addEventListener("click", () => {
+    const ids = [...selected];
+    if (!ids.length) return toast("请先勾选要删除的二维码", "err");
+    openModal({
+      title: `删除所选 ${ids.length} 个二维码？`,
+      body: "仅未绑定 / 已停用的码会被删除，已绑定的会自动跳过。删除后这些码将失效。",
+      confirmText: "确认删除",
+      danger: true,
+      onConfirm: async () => {
+        try {
+          const r = await api.adminBulkDeleteQrCodes(token, ids);
+          toast(r.message || "已删除", "ok");
+          await reload();
+        } catch (err) { toast(err.message || "删除失败", "err"); }
+      },
+    });
+  });
+
+  reload();
 }
 
 function openVehicleEditor(token, vehicle) {

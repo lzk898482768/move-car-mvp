@@ -244,6 +244,36 @@ export const api = {
       headers: { "X-Admin-Token": token },
     }),
 
+  // 预生成二维码：扫码解析 / 绑定（公开）
+  qrResolve: (codeToken) => request(`/api/qr/${encodeURIComponent(codeToken)}`),
+  qrBind: (codeToken, payload) =>
+    request(`/api/qr/${encodeURIComponent(codeToken)}/bind`, { method: "POST", body: payload }),
+
+  // 预生成二维码管理（管理员）
+  adminListQrCodes: (token, params = {}) => {
+    const qs = new URLSearchParams(params).toString();
+    return request(`/api/admin/qr-codes${qs ? `?${qs}` : ""}`, { headers: { "X-Admin-Token": token } });
+  },
+  adminBatchQrCodes: (token, payload) =>
+    request("/api/admin/qr-codes/batch", { method: "POST", headers: { "X-Admin-Token": token }, body: payload }),
+  adminUpdateQrCode: (token, id, payload) =>
+    request(`/api/admin/qr-codes/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      headers: { "X-Admin-Token": token },
+      body: payload,
+    }),
+  adminDeleteQrCode: (token, id) =>
+    request(`/api/admin/qr-codes/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+      headers: { "X-Admin-Token": token },
+    }),
+  adminBulkDeleteQrCodes: (token, ids) =>
+    request("/api/admin/qr-codes/bulk-delete", {
+      method: "POST",
+      headers: { "X-Admin-Token": token },
+      body: { ids },
+    }),
+
   // 拨号日志：筛选查询 / 导出 / 批量删除
   adminListCallLogs: (token, params = {}) => {
     const qs = new URLSearchParams(params).toString();
@@ -280,8 +310,15 @@ export function buildMoveUrl(vehicleToken) {
   return url.toString();
 }
 
-export function qrImageUrl(text) {
-  return `https://api.qrserver.com/v1/create-qr-code/?size=240x240&margin=8&data=${encodeURIComponent(text)}`;
+// 预生成二维码的扫码地址：/move.html?c=<codeToken>
+export function buildQrUrl(codeToken) {
+  const url = new URL("./move.html", location.href);
+  url.searchParams.set("c", codeToken);
+  return url.toString();
+}
+
+export function qrImageUrl(text, size = 240) {
+  return `https://api.qrserver.com/v1/create-qr-code/?size=${size}x${size}&margin=8&data=${encodeURIComponent(text)}`;
 }
 
 // ownerToken 本地存储（用于后台自动登录）

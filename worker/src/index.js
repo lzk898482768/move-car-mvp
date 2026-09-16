@@ -150,6 +150,9 @@ function matchRoute(method, pathname) {
     ["POST", /^\/api\/vehicles\/([^/]+)\/notify$/, handleNotify, ["vehicleToken"]],
     // 访客：直拨写拨号日志（直拨发生在客户端，需主动上报）
     ["POST", /^\/api\/vehicles\/([^/]+)\/call-log$/, handleVisitorCallLog, ["vehicleToken"]],
+    // 预生成二维码：扫码解析 / 车主绑定（公开）
+    ["POST", /^\/api\/qr\/([^/]+)\/bind$/, handleQrBind, ["codeToken"]],
+    ["GET", /^\/api\/qr\/([^/]+)$/, handleQrResolve, ["codeToken"]],
     // 平台已开通的通知通道（公开，供车主端筛选）
     ["GET", /^\/api\/channels$/, handlePublicChannels],
     // 广告位（公开读取，仅返回已启用）
@@ -183,6 +186,12 @@ function matchRoute(method, pathname) {
     ["PUT", /^\/api\/admin\/vehicles\/(\d+)$/, handleAdminVehicleUpdate, ["id"], "admin"],
     ["DELETE", /^\/api\/admin\/vehicles\/(\d+)$/, handleAdminVehicleDelete, ["id"], "admin"],
     ["GET", /^\/api\/admin\/vehicles\/(\d+)\/owner-token$/, handleAdminVehicleOwnerToken, ["id"], "admin"],
+    // 超级管理员：预生成二维码（批量出码 / 管理）
+    ["GET", /^\/api\/admin\/qr-codes$/, handleAdminQrList, [], "admin"],
+    ["POST", /^\/api\/admin\/qr-codes\/batch$/, handleAdminQrBatch, [], "admin"],
+    ["POST", /^\/api\/admin\/qr-codes\/bulk-delete$/, handleAdminQrBulkDelete, [], "admin"],
+    ["PATCH", /^\/api\/admin\/qr-codes\/(\d+)$/, handleAdminQrUpdate, ["id"], "admin"],
+    ["DELETE", /^\/api\/admin\/qr-codes\/(\d+)$/, handleAdminQrDelete, ["id"], "admin"],
     // 超级管理员：拨号日志
     ["GET", /^\/api\/admin\/call-logs$/, handleAdminCallLogsList, [], "admin"],
     ["GET", /^\/api\/admin\/call-logs\/export$/, handleAdminCallLogsExport, [], "admin"],
@@ -1161,6 +1170,7 @@ async function handleDeleteOwnerVehicle({ env, params }) {
   if (!vehicle) return json({ error: "not_found", message: "管理链接无效。" }, 404);
   await env.DB.prepare("DELETE FROM notification_logs WHERE vehicle_id = ?").bind(vehicle.id).run();
   await env.DB.prepare("DELETE FROM vehicles WHERE id = ?").bind(vehicle.id).run();
+  await releaseQrForVehicle(env, vehicle.id);
   return json({ message: "绑定已删除。" });
 }
 
@@ -1689,7 +1699,15 @@ async function handleAdminVehicleDelete({ env, params }) {
   if (!vehicle) return json({ error: "not_found", message: "车辆不存在。" }, 404);
   await env.DB.prepare("DELETE FROM notification_logs WHERE vehicle_id = ?").bind(id).run();
   await env.DB.prepare("DELETE FROM vehicles WHERE id = ?").bind(id).run();
+  await releaseQrForVehicle(env, id);
   return json({ message: "该车牌绑定已删除。" });
+}
+
+// 车辆被删后，把绑定到它的二维码退回「未绑定」，便于重新贴到别的车上
+async function releaseQrForVehicle(env, vehicleId) {
+  await env.DB.prepare(
+    "UPDATE qr_codes SET status = 'unbound', vehicle_id = NULL, bound_at = NULL, updated_at = ? WHERE vehicle_id = ?"
+  ).bind(nowIso(), vehicleId).run().catch(() => {});
 }
 
 async function handleAdminVehicleOwnerToken({ env, params }) {
@@ -1737,6 +1755,201 @@ async function handleAdminVehicleExport({ env }) {
   const vehicles = [];
   for (const v of rows.results || []) vehicles.push(await adminVehicleView(env, v));
   return json({ vehicles, exportedAt: nowIso(), count: vehicles.length });
+}
+
+/* ============================================================
+   预生成二维码：后台批量出码 → 扫码绑定 → 再扫即挪车界面
+   ============================================================ */
+const QR_STATUS = ["unbound", "bound", "disabled"];
+
+async function handleAdminQrBatch({ request, env }) {
+  assertConfig(env, ["DB"]);
+  const input = await readJson(request);
+  const count = Math.min(Math.max(Number(input.count) || 0, 1), 200);
+  const batchNo = String(input.batchNo || "").trim().slice(0, 40)
+    || `B${new Date().toISOString().slice(0, 10).replace(/-/g, "")}`;
+  const note = String(input.note || "").trim().slice(0, 100);
+  const now = nowIso();
+  const codes = [];
+  const stmts = [];
+  for (let i = 0; i < count; i++) {
+    const codeToken = await token("qr");
+    stmts.push(
+      env.DB.prepare(
+        `INSERT INTO qr_codes (code_token, batch_no, status, note, created_at, updated_at)
+         VALUES (?, ?, 'unbound', ?, ?, ?)`
+      ).bind(codeToken, batchNo, note, now, now)
+    );
+    codes.push(codeToken);
+  }
+  await env.DB.batch(stmts);
+  return json({ message: `已生成 ${count} 个二维码（批次 ${batchNo}）。`, batchNo, count, codes });
+}
+
+async function handleAdminQrList({ env, url }) {
+  assertConfig(env, ["DB"]);
+  const status = String(url.searchParams.get("status") || "").trim();
+  const batch = String(url.searchParams.get("batch") || "").trim();
+  const q = String(url.searchParams.get("q") || "").trim();
+  const limit = Math.min(Math.max(Number(url.searchParams.get("limit")) || 100, 1), 500);
+  const offset = Math.max(Number(url.searchParams.get("offset")) || 0, 0);
+
+  const where = [];
+  const vals = [];
+  if (status && QR_STATUS.includes(status)) { where.push("c.status = ?"); vals.push(status); }
+  if (batch) { where.push("c.batch_no = ?"); vals.push(batch); }
+  if (q) {
+    where.push("(c.code_token LIKE ? OR c.batch_no LIKE ? OR c.note LIKE ? OR v.plate_number_masked LIKE ?)");
+    vals.push(`%${q}%`, `%${q}%`, `%${q}%`, `%${q}%`);
+  }
+  const clause = where.length ? `WHERE ${where.join(" AND ")}` : "";
+
+  const rows = await env.DB.prepare(
+    `SELECT c.*, v.plate_number_masked AS masked_plate, v.vehicle_token AS vehicle_token
+     FROM qr_codes c LEFT JOIN vehicles v ON v.id = c.vehicle_id
+     ${clause} ORDER BY c.id DESC LIMIT ? OFFSET ?`
+  ).bind(...vals, limit, offset).all();
+  const totalRow = await env.DB.prepare(
+    `SELECT COUNT(*) AS n FROM qr_codes c LEFT JOIN vehicles v ON v.id = c.vehicle_id ${clause}`
+  ).bind(...vals).first();
+  const stats = await env.DB.prepare(
+    `SELECT COUNT(*) AS total,
+            SUM(CASE WHEN status = 'unbound' THEN 1 ELSE 0 END) AS unbound,
+            SUM(CASE WHEN status = 'bound' THEN 1 ELSE 0 END) AS bound,
+            SUM(CASE WHEN status = 'disabled' THEN 1 ELSE 0 END) AS disabled
+     FROM qr_codes`
+  ).first();
+  const batchRows = await env.DB.prepare(
+    `SELECT batch_no, COUNT(*) AS n FROM qr_codes WHERE batch_no <> '' GROUP BY batch_no ORDER BY batch_no DESC LIMIT 50`
+  ).all();
+
+  return json({
+    codes: (rows.results || []).map((r) => ({
+      id: r.id,
+      codeToken: r.code_token,
+      batchNo: r.batch_no,
+      status: r.status,
+      note: r.note,
+      maskedPlate: r.masked_plate || "",
+      vehicleToken: r.vehicle_token || "",
+      boundAt: r.bound_at,
+      createdAt: r.created_at,
+    })),
+    total: totalRow?.n || 0,
+    stats: {
+      total: stats?.total || 0,
+      unbound: stats?.unbound || 0,
+      bound: stats?.bound || 0,
+      disabled: stats?.disabled || 0,
+    },
+    batches: (batchRows.results || []).map((b) => ({ batchNo: b.batch_no, count: b.n })),
+  });
+}
+
+async function handleAdminQrUpdate({ request, env, params }) {
+  assertConfig(env, ["DB"]);
+  const id = Number(params.id);
+  const input = await readJson(request);
+  const status = String(input.status || "").trim();
+  if (!["unbound", "disabled"].includes(status)) {
+    return json({ error: "invalid_status", message: "状态只能设为启用或停用。" }, 400);
+  }
+  const row = await env.DB.prepare("SELECT * FROM qr_codes WHERE id = ?").bind(id).first();
+  if (!row) return json({ error: "not_found", message: "二维码不存在。" }, 404);
+  if (row.status === "bound") return json({ error: "already_bound", message: "已绑定的二维码不能改状态。" }, 400);
+  await env.DB.prepare("UPDATE qr_codes SET status = ?, updated_at = ? WHERE id = ?").bind(status, nowIso(), id).run();
+  return json({ message: status === "disabled" ? "二维码已停用。" : "二维码已启用。" });
+}
+
+async function handleAdminQrDelete({ env, params }) {
+  assertConfig(env, ["DB"]);
+  const id = Number(params.id);
+  const row = await env.DB.prepare("SELECT * FROM qr_codes WHERE id = ?").bind(id).first();
+  if (!row) return json({ error: "not_found", message: "二维码不存在。" }, 404);
+  if (row.status === "bound") {
+    return json({ error: "already_bound", message: "该二维码已绑定车辆，请先在「车牌管理」删除对应车牌。" }, 400);
+  }
+  await env.DB.prepare("DELETE FROM qr_codes WHERE id = ?").bind(id).run();
+  return json({ message: "二维码已删除。" });
+}
+
+async function handleAdminQrBulkDelete({ request, env }) {
+  assertConfig(env, ["DB"]);
+  const input = await readJson(request);
+  const ids = Array.isArray(input.ids) ? input.ids.map(Number).filter(Boolean) : [];
+  if (!ids.length) return json({ error: "empty_selection", message: "请先选择要删除的二维码。" }, 400);
+  const placeholders = ids.map(() => "?").join(",");
+  const res = await env.DB.prepare(
+    `DELETE FROM qr_codes WHERE id IN (${placeholders}) AND status <> 'bound'`
+  ).bind(...ids).run();
+  return json({ message: `已删除 ${changedRows(res)} 个未绑定二维码（已绑定的已自动跳过）。` });
+}
+
+// 公开：扫码解析（未绑定 → 引导绑定；已绑定 → 返回车辆令牌进挪车界面）
+async function handleQrResolve({ env, params }) {
+  assertConfig(env, ["DB"]);
+  const row = await env.DB.prepare("SELECT * FROM qr_codes WHERE code_token = ?").bind(params.codeToken).first();
+  if (!row) return json({ error: "qr_not_found", message: "二维码无效或已被删除。" }, 404);
+  if (row.status === "disabled") return json({ error: "qr_disabled", message: "该二维码已被停用。" }, 410);
+  if (row.status === "bound" && row.vehicle_id) {
+    const v = await env.DB.prepare("SELECT vehicle_token, plate_number_masked FROM vehicles WHERE id = ?")
+      .bind(row.vehicle_id).first();
+    if (v) return json({ status: "bound", vehicleToken: v.vehicle_token, maskedPlate: v.plate_number_masked });
+    return json({ status: "unbound" }); // 车辆已被删除 → 退回未绑定
+  }
+  return json({ status: "unbound" });
+}
+
+// 公开：车主扫码后绑定该二维码到自己的车牌
+async function handleQrBind({ request, env, params }) {
+  assertConfig(env, ["DB", "DATA_ENCRYPTION_KEY"]);
+  const row = await env.DB.prepare("SELECT * FROM qr_codes WHERE code_token = ?").bind(params.codeToken).first();
+  if (!row) return json({ error: "qr_not_found", message: "二维码无效或已被删除。" }, 404);
+  if (row.status === "disabled") return json({ error: "qr_disabled", message: "该二维码已被停用。" }, 410);
+  if (row.status === "bound") {
+    return json({ error: "qr_bound", message: "该二维码已绑定车辆，直接扫码即可使用。" }, 409);
+  }
+  const input = await readJson(request);
+  const validationError = validateVehicleInput(input, { requirePhone: true });
+  if (validationError) return json(validationError, 400);
+
+  const plate = normalizePlate(input.plateNumber);
+  const plateHash = await sha256Hex(plate);
+  const exists = await env.DB.prepare(
+    "SELECT id, plate_number_masked, owner_pin_hash FROM vehicles WHERE plate_number_hash = ?"
+  ).bind(plateHash).first();
+  if (exists) {
+    return json(
+      {
+        error: "plate_exists",
+        message: "该车牌已录入过，一个车牌只能录入一次。请用「车牌 + 管理密码」找回管理入口。",
+        maskedPlate: exists.plate_number_masked,
+        canRecover: Boolean(exists.owner_pin_hash),
+      },
+      409
+    );
+  }
+
+  const g = await loadGlobal(env);
+  const bundleOn = Boolean(input.notifyAllEnabled || input.wechatEnabled || input.wechatWorkEnabled);
+  const wanted = [];
+  if (bundleOn) { wanted.push("wechat_work"); wanted.push("wechat"); }
+  if (input.smsEnabled) wanted.push("sms");
+  if (input.privacyCallEnabled) wanted.push("privacy_call");
+  const usable = wanted.filter((c) => channelOpened(g, c));
+  if (wanted.length && !usable.length) {
+    return json({ error: "no_available_channel", message: "所选通知方式平台尚未开通，请联系管理员开通后再试。" }, 400);
+  }
+  if (!wanted.length && !isOn(g.direct_call_enabled_global)) {
+    return json({ error: "no_available_channel", message: "平台尚未开通任何通知方式，请联系管理员开通后再试。" }, 400);
+  }
+
+  const created = await insertVehicleRecord(env, { ...input, plateNumber: plate });
+  const now = nowIso();
+  await env.DB.prepare(
+    "UPDATE qr_codes SET status = 'bound', vehicle_id = ?, bound_at = ?, updated_at = ? WHERE id = ?"
+  ).bind(created.id, now, now, row.id).run();
+  return json({ message: "绑定成功，此二维码已生效。", ...created }, 201);
 }
 
 /* ============================================================
