@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <title>扫码挪车 · 生成挪车码</title>
-    <link rel="stylesheet" href="./styles.css" />
+    <link rel="stylesheet" href="./styles.css?v=20260916b" />
     <script src="./config.js"></script>
   </head>
   <body data-page="bind">
@@ -51,32 +51,36 @@
           </label>
 
           <h2 class="span-2">2 · 选择通知方式</h2>
-          <p class="form-note span-2">以下方式由平台统一开通，仅勾选你需要的（至少一种）：</p>
+          <p class="form-note span-2">默认使用「直拨」：访客扫码后可直接拨打你的手机号。你也可以开启以下方式叠加提醒。</p>
 
-          <div class="switch-row span-2" data-channel="wechat_work">
-            <div class="meta"><b>企业微信机器人</b><span>管理员统一配置的企微机器人，匿名推送挪车提醒</span></div>
-            <label class="switch"><input type="checkbox" id="wechatWorkEnabled" name="wechatWorkEnabled" /><span class="track"></span><span class="thumb"></span></label>
+          <!-- 直拨（默认）：与「隐私拨号」互斥，开启隐私拨号后自动切换 -->
+          <div class="switch-row span-2" data-channel="direct_call" id="directCallRow">
+            <div class="meta"><b>直拨车主（默认）</b><span id="directCallDesc">访客直接拨打你的手机号；开启隐私拨号后自动关闭</span></div>
+            <span class="pill ok" id="directCallState"><span class="dot"></span>使用中</span>
           </div>
-          <div class="switch-row span-2" data-channel="wechat">
-            <div class="meta"><b>微信通知</b><span>管理员统一配置的微信推送（Webhook）</span></div>
-            <label class="switch"><input type="checkbox" id="wechatEnabled" name="wechatEnabled" /><span class="track"></span><span class="thumb"></span></label>
+
+          <div class="switch-row span-2" data-channel="privacy_call">
+            <div class="meta"><b>隐私拨号</b><span>通过隐私号接通，隐藏双方真实号码；开启后「直拨」自动关闭</span></div>
+            <label class="switch"><input type="checkbox" id="privacyCallEnabled" name="privacyCallEnabled" /><span class="track"></span><span class="thumb"></span></label>
           </div>
+
           <div class="switch-row span-2" data-channel="sms">
             <div class="meta"><b>短信通知</b><span>由平台短信通道下发到车主手机号</span></div>
             <label class="switch"><input type="checkbox" id="smsEnabled" name="smsEnabled" /><span class="track"></span><span class="thumb"></span></label>
           </div>
-          <div class="switch-row span-2" data-channel="privacy_call">
-            <div class="meta"><b>隐私号呼叫</b><span>通过隐私号服务呼叫车主，隐藏真实号码</span></div>
-            <label class="switch"><input type="checkbox" id="privacyCallEnabled" name="privacyCallEnabled" /><span class="track"></span><span class="thumb"></span></label>
+
+          <div class="switch-row span-2" data-channel="notify_all">
+            <div class="meta"><b>一键通知</b><span>同时调用企业微信机器人接口与微信公众号模板消息接口提醒你</span></div>
+            <label class="switch"><input type="checkbox" id="notifyAllEnabled" name="notifyAllEnabled" /><span class="track"></span><span class="thumb"></span></label>
           </div>
 
           <div class="span-2 hidden" id="noChannelNote">
-            <div class="notice error">平台尚未开通任何通知方式，请联系管理员在后台「通知通道统一管理」中开启后再来创建。</div>
+            <div class="notice error">平台尚未开通任何通知方式，请联系管理员在后台「通知渠道」中开启后再来创建。</div>
           </div>
 
           <button type="submit" class="btn btn-primary span-2">创建挪车码</button>
         </form>
-        <p class="form-note">手机号仅保存在后端加密存储，访客不可见。至少选择一种通知方式。</p>
+        <p class="form-note">手机号仅保存在后端加密存储，访客不可见（隐私拨号 / 直拨经系统转接或由访客直接呼叫）。未开启任何方式时默认使用直拨。</p>
         <div id="bindResult" class="result hidden" style="margin-top:14px"></div>
       </section>
     </main>
@@ -88,6 +92,6 @@
       <a href="./setup.html"><span class="ic">ℹ️</span>说明</a>
     </nav>
 
-    <script src="./app.js?v=20260916a" type="module"></script>
+    <script src="./app.js?v=20260916b" type="module"></script>
   </body>
 </html>

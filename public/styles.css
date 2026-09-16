@@ -709,3 +709,19 @@ body.kb-open { overflow: hidden; }
   .bottom-nav { display: none; }
   .shell, .config-banner { padding-left: 24px; padding-right: 24px; }
 }
+
+/* ================= 管理后台 · 标签页布局 ================= */
+.admin-topbar { margin-bottom: 0; }
+.admin-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0 16px; }
+.admin-tab {
+  border: 1px solid var(--border); background: #fff; color: var(--text-soft);
+  border-radius: 999px; padding: 9px 16px; font-size: 14px; font-weight: 600;
+  cursor: pointer; transition: .15s; -webkit-tap-highlight-color: transparent;
+}
+.admin-tab:hover { border-color: var(--brand-1); color: var(--brand-1); }
+.admin-tab.active { background: var(--grad); color: #fff; border-color: transparent; box-shadow: 0 6px 16px rgba(22,163,74,.22); }
+.admin-tab-panel { display: block; }
+.admin-tab-panel.hidden { display: none; }
+
+/* 直拨被隐私拨号接管时置灰 */
+.switch-row.is-off { opacity: .55; }

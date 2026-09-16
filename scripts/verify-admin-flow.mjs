@@ -33,7 +33,7 @@ console.log("\n=== 1. 创建挪车码（含管理密码 + 企业微信/短信）
 const created = await call("POST", "/api/vehicles", {
   body: {
     plateNumber: plate,
-    wechatWorkEnabled: true,
+    notifyAllEnabled: true,
     ownerPhone: "13800000001",
     smsEnabled: true,
     privacyCallEnabled: false,
@@ -48,18 +48,18 @@ ok("拿到 ownerToken / vehicleToken", Boolean(ownerToken && vehicleToken));
 console.log("\n=== 2. 车主后台读取（验证配置回填） ===");
 const ownerGet = await call("GET", `/api/owner/${ownerToken}/vehicle`);
 ok("返回 200", ownerGet.status === 200, JSON.stringify(ownerGet.data));
-ok("回填企业微信开关", ownerGet.data?.wechatWorkEnabled === true, String(ownerGet.data?.wechatWorkEnabled));
+ok("回填一键通知开关", ownerGet.data?.notifyAllEnabled === true, String(ownerGet.data?.notifyAllEnabled));
 ok("回填手机号（脱敏）", ownerGet.data?.ownerPhoneMasked === "138****01", String(ownerGet.data?.ownerPhoneMasked));
 ok("smsEnabled = true", ownerGet.data?.smsEnabled === true);
 ok("hasPin = true", ownerGet.data?.hasPin === true);
 
 console.log("\n=== 3. 修改配置并重新读取（验证「保存生效」） ===");
 const patched = await call("PATCH", `/api/owner/${ownerToken}/vehicle`, {
-  body: { wechatWorkEnabled: false, smsEnabled: false },
+  body: { notifyAllEnabled: false, smsEnabled: false },
 });
 ok("PATCH 200", patched.status === 200, JSON.stringify(patched.data));
 const ownerGet2 = await call("GET", `/api/owner/${ownerToken}/vehicle`);
-ok("企业微信开关已更新", ownerGet2.data?.wechatWorkEnabled === false, String(ownerGet2.data?.wechatWorkEnabled));
+ok("一键通知开关已更新", ownerGet2.data?.notifyAllEnabled === false, String(ownerGet2.data?.notifyAllEnabled));
 ok("smsEnabled 已关闭（不再被误重置为开）", ownerGet2.data?.smsEnabled === false, String(ownerGet2.data?.smsEnabled));
 ok("手机号仍保留（留空不改）", ownerGet2.data?.ownerPhoneMasked === "138****01", String(ownerGet2.data?.ownerPhoneMasked));
 
@@ -195,7 +195,7 @@ ok("非法查看密码被拒", vhBadPin.status === 400, String(vhBadPin.status))
 
 const vhA = await call("POST", "/api/admin/vehicles", {
   token: adminToken,
-  body: { plateNumber: `沪B${stamp}1`, ownerPhone: "13900000011", ownerPin: "1357", smsEnabled: true, wechatWorkWebhook: "https://example.com/w1" },
+  body: { plateNumber: `沪B${stamp}1`, ownerPhone: "13900000011", ownerPin: "1357", smsEnabled: true, notifyAllEnabled: true, wechatOpenid: "oTestOpenid123" },
 });
 ok("新增车牌 201", vhA.status === 201, JSON.stringify(vhA.data));
 const vhAId = vhA.data?.id;
@@ -213,7 +213,8 @@ ok("列表返回", vhList.status === 200 && Array.isArray(vhList.data?.vehicles)
 const rowA = (vhList.data?.vehicles || []).find((v) => v.id === vhAId);
 ok("列表能还原明文车牌（非脱敏）", rowA?.plateNumber === `沪B${stamp}1`, String(rowA?.plateNumber));
 ok("列表能还原手机号", rowA?.ownerPhone === "13900000011", String(rowA?.ownerPhone));
-ok("列表能还原企业微信 Webhook", rowA?.wechatWorkWebhook === "https://example.com/w1", String(rowA?.wechatWorkWebhook));
+ok("列表能还原一键通知开关", rowA?.notifyAllEnabled === true, String(rowA?.notifyAllEnabled));
+ok("列表能还原微信 OpenID", rowA?.wechatOpenid === "oTestOpenid123", String(rowA?.wechatOpenid));
 ok("plateMissing = false", rowA?.plateMissing === false);
 
 const searchPlate = await call("GET", `/api/admin/vehicles?q=${encodeURIComponent(`沪B${stamp}1`)}`, { token: adminToken });
@@ -283,12 +284,12 @@ const vhDelAgain = await call("DELETE", `/api/admin/vehicles/${vhBId}`, { token:
 ok("重复删除 → 404", vhDelAgain.status === 404, String(vhDelAgain.status));
 
 console.log("\n=== 11. 访客通道解析（混合模型） ===");
-// 步骤 3 已关闭短信，这里重新开启，验证「车主开关 + 全局密钥」组合生效
-const reEnable = await call("PATCH", `/api/owner/${ownerToken}/vehicle`, { body: { smsEnabled: true } });
-ok("重新开启短信", reEnable.status === 200, JSON.stringify(reEnable.data));
+// 步骤 3 已关闭短信 / 一键通知，这里重新开启，验证「车主开关 + 全局配置」组合生效
+const reEnable = await call("PATCH", `/api/owner/${ownerToken}/vehicle`, { body: { smsEnabled: true, notifyAllEnabled: true } });
+ok("重新开启短信 + 一键通知", reEnable.status === 200, JSON.stringify(reEnable.data));
 const pub = await call("GET", `/api/vehicles/${vehicleToken}/public`);
 ok("访客可见通道", pub.status === 200 && Array.isArray(pub.data?.availableChannels), JSON.stringify(pub.data));
-ok("含企业微信（车主自带）", (pub.data?.availableChannels || []).includes("wechat_work"));
+ok("含企业微信（一键通知）", (pub.data?.availableChannels || []).includes("wechat_work"));
 ok("含短信（车主开关 + 全局密钥）", (pub.data?.availableChannels || []).includes("sms"), JSON.stringify(pub.data?.availableChannels));
 ok("不含隐私号（未配置全局隐私号）", !(pub.data?.availableChannels || []).includes("privacy_call"));
 

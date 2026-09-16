@@ -33,13 +33,16 @@ const reset = await call("PUT", "/api/admin/config", {
     aliyun_access_key_id: "", aliyun_access_key_secret: "", aliyun_sms_sign_name: "", aliyun_sms_template_code: "",
     sms_custom_webhook: "", sms_custom_token: "",
     privacy_call_webhook_url: "", privacy_call_webhook_token: "",
+    wechat_mp_appid: "", wechat_mp_secret: "", wechat_mp_template_id: "", wechat_mp_openid: "",
     sms_vendor: "tencent", privacy_vendor: "custom",
     sms_enabled_global: "true", privacy_enabled_global: "true", direct_call_enabled_global: "true",
   },
 });
 ok("清空各服务商参数", reset.status === 200);
 ch = await call("GET", "/api/channels");
-ok("干净状态下 sms / privacy 均未开通", ch.data.channels.sms === false && ch.data.channels.privacy_call === false, JSON.stringify(ch.data.channels));
+ok("干净状态下 sms / privacy / wechat 均未开通",
+  ch.data.channels.sms === false && ch.data.channels.privacy_call === false && ch.data.channels.wechat === false,
+  JSON.stringify(ch.data.channels));
 
 console.log("\n=== 2. 平台通道查询（公开接口） ===");
 ch = await call("GET", "/api/channels");
@@ -96,6 +99,15 @@ await call("PUT", "/api/admin/config", { token, body: { privacy_vendor: "tencent
 ch = await call("GET", "/api/channels");
 ok("切腾讯云隐私号且无密钥 → 未开通", ch.data.channels.privacy_call === false);
 
+console.log("\n=== 4.5 微信通知：公众号模板消息（非 Webhook） ===");
+await call("PUT", "/api/admin/config", { token, body: { wechat_notify_enabled_global: "true", wechat_mp_appid: "", wechat_mp_secret: "", wechat_mp_template_id: "" } });
+ch = await call("GET", "/api/channels");
+ok("仅开关开启、无公众号参数 → wechat 未开通", ch.data.channels.wechat === false, JSON.stringify(ch.data.channels));
+await call("PUT", "/api/admin/config", { token, body: { wechat_mp_appid: "wx-test-appid", wechat_mp_secret: "wx-test-secret", wechat_mp_template_id: "TPL-123" } });
+ch = await call("GET", "/api/channels");
+ok("公众号 AppID/Secret/模板ID 齐全 → wechat 开通", ch.data.channels.wechat === true, JSON.stringify(ch.data.channels));
+ok("无 wechat_notify_webhook 配置项（已改模板消息）", !("wechat_notify_webhook" in ch.data.channels));
+
 console.log("\n=== 5. 车主只能用已开通的通道 ===");
 // 先关闭短信，尝试用短信创建 → 应被拒
 await call("PUT", "/api/admin/config", { token, body: { sms_enabled_global: "false" } });
@@ -124,19 +136,30 @@ ok("platformChannels 含短信", ov.data.platformChannels.includes("sms"), JSON.
 ok("platformChannels 不含隐私号（未配置）", !ov.data.platformChannels.includes("privacy_call"), JSON.stringify(ov.data.platformChannels));
 ok("返回 channelMeta 元信息", Array.isArray(ov.data.channelMeta) && ov.data.channelMeta.length === 5);
 
-console.log("\n=== 7. 访客页：隐私号未开通 → 直拨回退 ===");
-// 关闭隐私号通道，模拟「未开通隐私拨号」
+console.log("\n=== 7. 访客拨打方式：直拨为默认，隐私拨号开关控制 ===");
+// 关闭隐私号通道 → 直拨（默认）
 await call("PUT", "/api/admin/config", { token, body: { privacy_enabled_global: "false" } });
 const pv = await call("GET", `/api/vehicles/${vehicleToken}/public`);
 ok("访客接口 200", pv.status === 200);
 ok("可用通道不含隐私号", !(pv.data.availableChannels || []).includes("privacy_call"), JSON.stringify(pv.data.availableChannels));
+ok("callMode=direct（默认直拨）", pv.data.callMode === "direct", String(pv.data.callMode));
 ok("返回 directCall 且带号码", Boolean(pv.data.directCall?.enabled && pv.data.directCall.phone), JSON.stringify(pv.data.directCall));
 ok("directCallEnabled=true", pv.data.directCallEnabled === true);
 
-// 关闭直拨 → 不再返回号码
+// 关闭直拨 → 无拨打方式
 await call("PUT", "/api/admin/config", { token, body: { direct_call_enabled_global: "false" } });
 const pv2 = await call("GET", `/api/vehicles/${vehicleToken}/public`);
 ok("关闭直拨后 directCall 为 null", pv2.data.directCall === null, JSON.stringify(pv2.data.directCall));
+ok("关闭直拨后 callMode=none", pv2.data.callMode === "none", String(pv2.data.callMode));
+
+// 恢复隐私拨号 → 隐私拨号优先，直拨自动关闭
+await call("PUT", "/api/admin/config", { token, body: { direct_call_enabled_global: "true", privacy_enabled_global: "true", privacy_vendor: "custom", privacy_call_webhook_url: "https://example.com/privacy-hook" } });
+const pv3 = await call("GET", `/api/vehicles/${vehicleToken}/public`);
+ok("开启隐私拨号后 callMode=privacy", pv3.data.callMode === "privacy", String(pv3.data.callMode));
+ok("隐私拨号开启时不再返回直拨号码", pv3.data.directCall === null, JSON.stringify(pv3.data.directCall));
+
+// 复原：关闭隐私拨号
+await call("PUT", "/api/admin/config", { token, body: { privacy_enabled_global: "false" } });
 
 console.log("\n=== 8. 健康检查暴露通道状态 ===");
 const h = await call("GET", "/api/health");

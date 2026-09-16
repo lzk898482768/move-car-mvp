@@ -27,20 +27,20 @@ const adminToken = login.data?.token;
 if (!adminToken) { console.log("无管理员令牌，终止"); process.exit(1); }
 
 console.log("\n=== 2. 手机号必填 ===");
-const noPhone = await call("POST", "/api/vehicles", { body: { plateNumber: `鲁B${stamp}`, wechatWorkWebhook: "https://example.com/w" } });
+const noPhone = await call("POST", "/api/vehicles", { body: { plateNumber: `鲁B${stamp}`, notifyAllEnabled: true } });
 ok("缺手机号 → 400", noPhone.status === 400, String(noPhone.status));
 ok("错误码 invalid_phone", noPhone.data?.error === "invalid_phone", JSON.stringify(noPhone.data));
 
 console.log("\n=== 3. 车牌唯一：首次录入成功 ===");
 const created = await call("POST", "/api/vehicles", {
-  body: { plateNumber: plate, ownerPhone: PHONE1, wechatWorkWebhook: "https://example.com/w", ownerPin: pin },
+  body: { plateNumber: plate, ownerPhone: PHONE1, notifyAllEnabled: true, ownerPin: pin },
 });
 ok("首次录入 201", created.status === 201, JSON.stringify(created.data));
 const ownerToken = created.data?.ownerToken;
 const vehicleToken = created.data?.vehicleToken;
 
 console.log("\n=== 4. 重复录入 → 只能找回 ===");
-const dup = await call("POST", "/api/vehicles", { body: { plateNumber: plate, ownerPhone: PHONE1, wechatWorkWebhook: "https://example.com/w" } });
+const dup = await call("POST", "/api/vehicles", { body: { plateNumber: plate, ownerPhone: PHONE1, notifyAllEnabled: true } });
 ok("重复录入 409", dup.status === 409, String(dup.status));
 ok("错误码 plate_exists", dup.data?.error === "plate_exists", JSON.stringify(dup.data));
 ok("返回脱敏车牌", Boolean(dup.data?.maskedPlate), JSON.stringify(dup.data));

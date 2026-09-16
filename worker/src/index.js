@@ -39,9 +39,15 @@ const GLOBAL_SETTINGS = [
   { key: "wechat_enabled_global", secret: false, label: "启用企业微信通知", def: "true", group: "wechat_work", type: "bool" },
   { key: "wechat_work_webhook", secret: true, label: "企业微信默认 Webhook", group: "wechat_work" },
 
-  /* ---- 微信通知（车主仅开关，Webhook 由超管统一配置） ---- */
+  /* ---- 微信通知：公众号模板消息（超管统一配置，车主仅开关） ---- */
   { key: "wechat_notify_enabled_global", secret: false, label: "启用微信通知", def: "true", group: "wechat", type: "bool" },
-  { key: "wechat_notify_webhook", secret: true, label: "微信通知 Webhook（超管统一配置）", group: "wechat" },
+  { key: "wechat_mp_appid", secret: false, label: "公众号 AppID", group: "wechat" },
+  { key: "wechat_mp_secret", secret: true, label: "公众号 AppSecret", group: "wechat" },
+  { key: "wechat_mp_template_id", secret: false, label: "模板消息 ID（模板ID）", group: "wechat" },
+  { key: "wechat_mp_openid", secret: false, label: "默认接收 OpenID（车主未单独填写时使用）", group: "wechat" },
+  { key: "wechat_mp_template_title", secret: false, label: "模板首行文案（可选）", def: "您的爱车收到挪车提醒", group: "wechat" },
+  { key: "wechat_mp_template_remark", secret: false, label: "模板备注文案（可选）", def: "请尽快前往挪车，感谢配合。", group: "wechat" },
+  { key: "wechat_mp_url", secret: false, label: "模板点击跳转链接（可选）", group: "wechat" },
 
   /* ---- 短信：多平台 ---- */
   { key: "sms_enabled_global", secret: false, label: "启用短信通知", def: "true", group: "sms", type: "bool" },
@@ -227,7 +233,7 @@ async function handleHealth({ env }) {
   const smsReady = isOn(g.sms_enabled_global) && smsVendorReady(g);
   const privacyReady = isOn(g.privacy_enabled_global) && privacyVendorReady(g);
   const wechatWorkGlobal = isOn(g.wechat_enabled_global) && Boolean(g.wechat_work_webhook);
-  const wechatNotifyGlobal = isOn(g.wechat_notify_enabled_global) && Boolean(g.wechat_notify_webhook);
+  const wechatNotifyGlobal = isOn(g.wechat_notify_enabled_global) && wechatMpReady(g);
   return json({
     status: "ok",
     d1: Boolean(env.DB),
@@ -343,17 +349,26 @@ async function handleCreateVehicle({ request, env }) {
       409
     );
   }
-  // 车主只能使用平台已开通的通知方式
+  // 车主只能使用平台已开通的通知方式；「直拨」为默认方式，只要平台允许直拨即可创建
   const g = await loadGlobal(env);
+  const bundleOn = Boolean(input.notifyAllEnabled || input.wechatEnabled || input.wechatWorkEnabled);
   const wanted = [];
-  if (input.wechatWorkEnabled || input.wechatWorkWebhook) wanted.push("wechat_work");
-  if (input.wechatEnabled) wanted.push("wechat");
+  if (bundleOn) { wanted.push("wechat_work"); wanted.push("wechat"); }
   if (input.smsEnabled) wanted.push("sms");
   if (input.privacyCallEnabled) wanted.push("privacy_call");
   const usable = wanted.filter((c) => channelOpened(g, c));
-  if (!usable.length) {
+  const directAvailable = isOn(g.direct_call_enabled_global);
+  // 明确选了通道但平台一个都没开 → 拒绝（避免静默降级让车主误以为已开启）
+  if (wanted.length && !usable.length) {
     return json(
       { error: "no_available_channel", message: "所选通知方式平台尚未开通，请到超级管理员后台开通后再试。" },
+      400
+    );
+  }
+  // 未选任何通道时默认走直拨，平台连直拨都没开才拒绝
+  if (!wanted.length && !directAvailable) {
+    return json(
+      { error: "no_available_channel", message: "平台尚未开通任何通知方式，请联系管理员开通后再试。" },
       400
     );
   }
@@ -367,14 +382,16 @@ async function insertVehicleRecord(env, input) {
   const vehicleToken = await token("veh");
   const ownerToken = await token("own");
   const now = nowIso();
+  // 一键通知：同时开启企微 + 微信模板消息
+  const bundleOn = Boolean(input.notifyAllEnabled || input.wechatEnabled || input.wechatWorkEnabled);
   const res = await env.DB.prepare(
     `INSERT INTO vehicles (
       vehicle_token, owner_token, plate_number_masked, plate_number_hash, plate_number_encrypted,
       owner_phone_encrypted, showdoc_webhook,
       wechat_work_webhook_encrypted, wechat_work_enabled, wechat_enabled,
-      sms_enabled, privacy_call_enabled, owner_pin_hash,
+      sms_enabled, privacy_call_enabled, owner_pin_hash, wechat_openid,
       created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   )
     .bind(
       vehicleToken,
@@ -384,12 +401,13 @@ async function insertVehicleRecord(env, input) {
       await encryptText(env, plateNumber),
       input.ownerPhone ? await encryptText(env, normalizePhone(input.ownerPhone)) : null,
       "",
-      input.wechatWorkWebhook ? await encryptText(env, normalizeHttpUrl(input.wechatWorkWebhook)) : null,
-      input.wechatWorkEnabled ? 1 : 0,
-      input.wechatEnabled ? 1 : 0,
+      null,
+      bundleOn ? 1 : 0,
+      bundleOn ? 1 : 0,
       input.smsEnabled ? 1 : 0,
       input.privacyCallEnabled ? 1 : 0,
       input.ownerPin ? await sha256Hex(`pin:${input.ownerPin}`) : null,
+      input.wechatOpenid ? await encryptText(env, String(input.wechatOpenid).trim()) : null,
       now,
       now
     )
@@ -411,9 +429,10 @@ async function handlePublicVehicle({ env, params }) {
   const vehicle = await getVehicleByToken(env, params.vehicleToken);
   if (!vehicle) return json({ error: "not_found", message: "车辆不存在。" }, 404);
   const channels = availableChannels(vehicle, g);
-  // 隐私号不可用时回退为直拨：仅在管理员开启直拨、且车主登记了号码时返回真实号码
+  // 拨打方式：隐私拨号优先；未开启隐私拨号则为「直拨」（默认），需管理员开启直拨 + 车主登记号码
+  const callMode = resolveCallMode(vehicle, g, channels);
   let directCall = null;
-  if (!channels.includes("privacy_call") && isOn(g.direct_call_enabled_global) && vehicle.owner_phone_encrypted) {
+  if (callMode === "direct") {
     try {
       directCall = { enabled: true, phone: await decryptText(env, vehicle.owner_phone_encrypted) };
     } catch {
@@ -423,6 +442,7 @@ async function handlePublicVehicle({ env, params }) {
   return json({
     maskedPlate: vehicle.plate_number_masked,
     availableChannels: channels,
+    callMode,
     directCall,
     directCallEnabled: isOn(g.direct_call_enabled_global),
   });
@@ -489,14 +509,23 @@ async function handleNotify({ request, env, params }) {
 }
 
 async function dispatchNotify(vehicle, g, env, channel, input = {}) {
+  if (channel === "notify_all") {
+    // 一键通知：企业微信 + 微信公众号模板消息同时送达（任一失败不影响另一个，只要有一个成功即算成功）
+    const results = await Promise.allSettled([
+      sendWechatWorkChannel(vehicle, g, env),
+      sendWechatTemplate(vehicle, g, env),
+    ]);
+    const okCount = results.filter((r) => r.status === "fulfilled").length;
+    if (!okCount) {
+      const err = results.find((r) => r.status === "rejected")?.reason;
+      throw new Error(err?.message || "一键通知发送失败");
+    }
+    return {};
+  }
   if (channel === "wechat") {
-    const webhook = g.wechat_notify_webhook;
-    if (!webhook) throw new Error("微信通知未配置");
-    await sendWechat(webhook, vehicle);
+    await sendWechatTemplate(vehicle, g, env);
   } else if (channel === "wechat_work") {
-    const webhook = vehicle.wechat_work_webhook_encrypted ? await decryptText(env, vehicle.wechat_work_webhook_encrypted) : g.wechat_work_webhook;
-    if (!webhook) throw new Error("企业微信未配置");
-    await sendWechatWork(webhook, vehicle);
+    await sendWechatWorkChannel(vehicle, g, env);
   } else if (channel === "sms") {
     await sendSms(vehicle, env, g);
   } else if (channel === "privacy_call") {
@@ -505,6 +534,12 @@ async function dispatchNotify(vehicle, g, env, channel, input = {}) {
     throw new Error("未知通知渠道");
   }
   return {};
+}
+
+async function sendWechatWorkChannel(vehicle, g, env) {
+  const webhook = vehicle.wechat_work_webhook_encrypted ? await decryptText(env, vehicle.wechat_work_webhook_encrypted) : g.wechat_work_webhook;
+  if (!webhook) throw new Error("企业微信未配置");
+  await sendWechatWork(webhook, vehicle);
 }
 
 async function sendWechatWork(webhook, vehicle) {
@@ -518,16 +553,66 @@ async function sendWechatWork(webhook, vehicle) {
   if (data.errcode && data.errcode !== 0) throw new Error(`企业微信通知失败：${data.errmsg || data.errcode}`);
 }
 
-// 微信通知：与「企业微信机器人」同构，Webhook 由超管统一配置（可对接微信机器人 / 公众号推送中转）
-async function sendWechat(webhook, vehicle) {
-  const body = {
-    msgtype: "text",
-    text: { content: `扫码挪车提醒：车辆 ${vehicle.plate_number_masked} 收到挪车提醒，请及时处理。` },
+// 微信通知：调用「公众号模板消息」接口（先取 access_token，再发模板消息），
+// 不再使用 Webhook。接收人 OpenID 取「车主单独填写」优先，否则用超管配置的默认 OpenID。
+async function sendWechatTemplate(vehicle, g, env) {
+  if (!wechatMpReady(g)) throw new Error("微信通知（公众号模板消息）未配置，请到超管后台补全 AppID / AppSecret / 模板ID");
+  let openid = g.wechat_mp_openid || "";
+  if (vehicle.wechat_openid) {
+    try { openid = await decryptText(env, vehicle.wechat_openid); } catch {}
+  }
+  if (!openid) throw new Error("微信通知缺少接收 OpenID（车主未填写且超管未配置默认 OpenID）");
+
+  const token = await getWechatAccessToken(env, g);
+  const data = {
+    first: { value: g.wechat_mp_template_title || "您的爱车收到挪车提醒" },
+    keyword1: { value: vehicle.plate_number_masked },
+    keyword2: { value: formatCnTime(new Date()) },
+    remark: { value: g.wechat_mp_template_remark || "请尽快前往挪车，感谢配合。" },
   };
-  const res = await fetch(webhook, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-  if (!res.ok) throw new Error(`微信通知失败：${res.status}`);
-  const data = await res.json().catch(() => ({}));
-  if (data.errcode && data.errcode !== 0) throw new Error(`微信通知失败：${data.errmsg || data.errcode}`);
+  const payload = { touser: openid, template_id: g.wechat_mp_template_id, data };
+  if (g.wechat_mp_url) payload.url = g.wechat_mp_url;
+
+  const res = await fetch(`https://api.weixin.qq.com/cgi-bin/message/template/send?access_token=${encodeURIComponent(token)}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const out = await res.json().catch(() => ({}));
+  if (!res.ok || (out.errcode && out.errcode !== 0)) {
+    throw new Error(`微信模板消息失败：${out.errmsg || out.errcode || res.status}`);
+  }
+}
+
+// 获取公众号 access_token，并用 Cache API 缓存（有效期 7200s，提前 5 分钟过期）
+async function getWechatAccessToken(env, g) {
+  const cacheKey = `https://wechat-token.internal/${encodeURIComponent(g.wechat_mp_appid)}`;
+  try {
+    const cached = await caches.default.match(cacheKey);
+    if (cached) {
+      const body = await cached.json();
+      if (body && body.access_token) return body.access_token;
+    }
+  } catch {}
+
+  const url = `https://api.weixin.qq.com/cgi-bin/token?grant_type=client_credential&appid=${encodeURIComponent(g.wechat_mp_appid)}&secret=${encodeURIComponent(g.wechat_mp_secret)}`;
+  const res = await fetch(url);
+  const out = await res.json().catch(() => ({}));
+  if (!out.access_token) throw new Error(`获取微信 access_token 失败：${out.errmsg || out.errcode || res.status}`);
+  try {
+    await caches.default.put(
+      cacheKey,
+      new Response(JSON.stringify({ access_token: out.access_token }), {
+        headers: { "Content-Type": "application/json", "Cache-Control": `max-age=${Math.max(60, (out.expires_in || 7200) - 300)}` },
+      })
+    );
+  } catch {}
+  return out.access_token;
+}
+
+function formatCnTime(d) {
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
 /* ---------- 短信：按服务商分发 ---------- */
@@ -814,17 +899,27 @@ async function handleOwnerVehicle({ env, params }) {
   try {
     if (vehicle.plate_number_encrypted) plateNumber = await decryptText(env, vehicle.plate_number_encrypted);
   } catch {}
+  let wechatOpenid = "";
+  try {
+    if (vehicle.wechat_openid) wechatOpenid = await decryptText(env, vehicle.wechat_openid);
+  } catch {}
   return json({
     vehicleToken: vehicle.vehicle_token,
     maskedPlate: vehicle.plate_number_masked,
     plateNumber: plateNumber || vehicle.plate_number_masked,
+    // 一键通知：企微 + 微信模板消息（两者同开同关）
+    notifyAllEnabled: Boolean(vehicle.wechat_work_enabled && vehicle.wechat_enabled),
     wechatWorkEnabled: Boolean(vehicle.wechat_work_enabled),
     wechatEnabled: Boolean(vehicle.wechat_enabled),
     smsEnabled: Boolean(vehicle.sms_enabled),
     privacyCallEnabled: Boolean(vehicle.privacy_call_enabled),
+    // 隐私拨号未开启 → 直拨（默认）
+    directCallEnabled: !vehicle.privacy_call_enabled && channelOpened(g, "direct_call"),
     hasPin: Boolean(vehicle.owner_pin_hash),
     ownerPhoneMasked,
     hasPhone: Boolean(vehicle.owner_phone_encrypted),
+    wechatOpenid,
+    hasWechatOpenid: Boolean(vehicle.wechat_openid),
     // 平台已开通的通道：车主后台只展示这些，未开通的不出现
     platformChannels: platformChannels(g),
     channelMeta: CHANNEL_GROUPS.map((c) => ({
@@ -854,11 +949,21 @@ async function handlePatchOwnerVehicle({ request, env, params }) {
   const updates = [];
   const values = [];
   // 显式传 null / 空字符串表示清除；传值表示设置。支持把 webhook 清空。
+  // 一键通知：企微 + 微信模板消息同开同关
+  if ("notifyAllEnabled" in input && typeof input.notifyAllEnabled === "boolean") {
+    const v = input.notifyAllEnabled ? 1 : 0;
+    updates.push("wechat_work_enabled = ?"); values.push(v);
+    updates.push("wechat_enabled = ?"); values.push(v);
+  }
   if ("wechatWorkEnabled" in input && typeof input.wechatWorkEnabled === "boolean") {
     updates.push("wechat_work_enabled = ?"); values.push(input.wechatWorkEnabled ? 1 : 0);
   }
   if ("wechatEnabled" in input && typeof input.wechatEnabled === "boolean") {
     updates.push("wechat_enabled = ?"); values.push(input.wechatEnabled ? 1 : 0);
+  }
+  if ("wechatOpenid" in input) {
+    if (input.wechatOpenid) { updates.push("wechat_openid = ?"); values.push(await encryptText(env, String(input.wechatOpenid).trim())); }
+    else { updates.push("wechat_openid = ?"); values.push(null); }
   }
   if ("wechatWorkWebhook" in input) {
     if (input.wechatWorkWebhook) { updates.push("wechat_work_webhook_encrypted = ?"); values.push(await encryptText(env, normalizeHttpUrl(input.wechatWorkWebhook))); }
@@ -1456,17 +1561,18 @@ function validateAdInput(input) {
 async function adminVehicleView(env, v) {
   let plateNumber = v.plate_number_masked;
   let ownerPhone = "";
-  let wechatWorkWebhook = "";
+  let wechatOpenid = "";
   try { if (v.plate_number_encrypted) plateNumber = await decryptText(env, v.plate_number_encrypted); } catch {}
   try { if (v.owner_phone_encrypted) ownerPhone = await decryptText(env, v.owner_phone_encrypted); } catch {}
-  try { if (v.wechat_work_webhook_encrypted) wechatWorkWebhook = await decryptText(env, v.wechat_work_webhook_encrypted); } catch {}
+  try { if (v.wechat_openid) wechatOpenid = await decryptText(env, v.wechat_openid); } catch {}
   return {
     id: v.id,
     plateNumber,
     maskedPlate: v.plate_number_masked,
     plateMissing: !v.plate_number_encrypted,
     ownerPhone,
-    wechatWorkWebhook,
+    wechatOpenid,
+    notifyAllEnabled: Boolean(v.wechat_work_enabled && v.wechat_enabled),
     wechatWorkEnabled: Boolean(v.wechat_work_enabled),
     wechatEnabled: Boolean(v.wechat_enabled),
     smsEnabled: Boolean(v.sms_enabled),
@@ -1545,13 +1651,16 @@ async function handleAdminVehicleUpdate({ request, env, params }) {
       updates.push("owner_phone_encrypted = ?"); values.push(await encryptText(env, normalizePhone(input.ownerPhone)));
     } else { updates.push("owner_phone_encrypted = ?"); values.push(null); }
   }
+  if ("notifyAllEnabled" in input && typeof input.notifyAllEnabled === "boolean") {
+    const v = input.notifyAllEnabled ? 1 : 0;
+    updates.push("wechat_work_enabled = ?"); values.push(v);
+    updates.push("wechat_enabled = ?"); values.push(v);
+  }
   if ("wechatWorkEnabled" in input && typeof input.wechatWorkEnabled === "boolean") { updates.push("wechat_work_enabled = ?"); values.push(input.wechatWorkEnabled ? 1 : 0); }
   if ("wechatEnabled" in input && typeof input.wechatEnabled === "boolean") { updates.push("wechat_enabled = ?"); values.push(input.wechatEnabled ? 1 : 0); }
-  if ("wechatWorkWebhook" in input) {
-    if (input.wechatWorkWebhook) {
-      if (!isHttpUrl(input.wechatWorkWebhook)) return json({ error: "invalid_wechat_work_webhook", message: "企业微信 Webhook 必须是 http 或 https 地址。" }, 400);
-      updates.push("wechat_work_webhook_encrypted = ?"); values.push(await encryptText(env, normalizeHttpUrl(input.wechatWorkWebhook)));
-    } else { updates.push("wechat_work_webhook_encrypted = ?"); values.push(null); }
+  if ("wechatOpenid" in input) {
+    if (input.wechatOpenid) { updates.push("wechat_openid = ?"); values.push(await encryptText(env, String(input.wechatOpenid).trim())); }
+    else { updates.push("wechat_openid = ?"); values.push(null); }
   }
   if (typeof input.smsEnabled === "boolean") { updates.push("sms_enabled = ?"); values.push(input.smsEnabled ? 1 : 0); }
   if (typeof input.privacyCallEnabled === "boolean") { updates.push("privacy_call_enabled = ?"); values.push(input.privacyCallEnabled ? 1 : 0); }
@@ -1689,11 +1798,15 @@ function privacyVendorReady(g) {
   if (v === "aliyun") return !!(g.aliyun_access_key_id && g.aliyun_access_key_secret);
   return false;
 }
+// 微信公众号模板消息参数是否配置完整
+function wechatMpReady(g) {
+  return !!(g.wechat_mp_appid && g.wechat_mp_secret && g.wechat_mp_template_id);
+}
 
 // 管理员是否在后台「开通」了某通道（开关 + 服务商参数齐全）
 function channelOpened(g, ch) {
   if (ch === "wechat_work") return isOn(g.wechat_enabled_global);
-  if (ch === "wechat") return isOn(g.wechat_notify_enabled_global);
+  if (ch === "wechat") return isOn(g.wechat_notify_enabled_global) && wechatMpReady(g);
   if (ch === "sms") return isOn(g.sms_enabled_global) && smsVendorReady(g);
   if (ch === "privacy_call") return isOn(g.privacy_enabled_global) && privacyVendorReady(g);
   if (ch === "direct_call") return isOn(g.direct_call_enabled_global);
@@ -1705,18 +1818,33 @@ function platformChannels(g) {
   return ["wechat_work", "wechat", "sms", "privacy_call"].filter((c) => channelOpened(g, c));
 }
 
+// 访客可用的通知通道。
+// 「一键通知」= 同时调用企业微信接口 + 微信公众号模板消息接口；
+// 当两者都可用时合成一个 notify_all 通道，让访客一键同时送达，避免二选一。
 function availableChannels(vehicle, g) {
-  const channels = [];
-  if (channelOpened(g, "wechat_work") && (vehicle.wechat_work_enabled || vehicle.wechat_work_webhook_encrypted || g.wechat_work_webhook)) channels.push("wechat_work");
-  if (channelOpened(g, "wechat") && vehicle.wechat_enabled && g.wechat_notify_webhook) channels.push("wechat");
-  if (channelOpened(g, "sms") && vehicle.sms_enabled && vehicle.owner_phone_encrypted) channels.push("sms");
-  if (channelOpened(g, "privacy_call") && vehicle.privacy_call_enabled && vehicle.owner_phone_encrypted) channels.push("privacy_call");
-  return channels;
+  const list = [];
+  const workOn = channelOpened(g, "wechat_work") && Boolean(vehicle.wechat_work_enabled);
+  const wechatOn = channelOpened(g, "wechat") && Boolean(vehicle.wechat_enabled);
+  if (workOn && wechatOn) list.push("notify_all");
+  else {
+    if (workOn) list.push("wechat_work");
+    if (wechatOn) list.push("wechat");
+  }
+  if (channelOpened(g, "sms") && vehicle.sms_enabled && vehicle.owner_phone_encrypted) list.push("sms");
+  if (channelOpened(g, "privacy_call") && vehicle.privacy_call_enabled && vehicle.owner_phone_encrypted) list.push("privacy_call");
+  return list;
+}
+
+// 访客拨打方式：隐私拨号优先；未开启隐私拨号则为直拨（默认）。返回 privacy / direct / none
+function resolveCallMode(vehicle, g, channels) {
+  if ((channels || availableChannels(vehicle, g)).includes("privacy_call")) return "privacy";
+  if (isOn(g.direct_call_enabled_global) && vehicle.owner_phone_encrypted) return "direct";
+  return "none";
 }
 
 function defaultNotifyChannel(vehicle, g) {
   const channels = availableChannels(vehicle, g);
-  return ["wechat_work", "wechat", "sms", "privacy_call"].find((c) => channels.includes(c)) || "";
+  return ["notify_all", "wechat_work", "wechat", "sms", "privacy_call"].find((c) => channels.includes(c)) || "";
 }
 
 /* ============================================================
@@ -1785,9 +1913,7 @@ function validateVehicleInput(input, { requireNotification = false, requirePhone
   if (requirePhone && !isPhone(input.ownerPhone)) {
     return { error: "invalid_phone", message: "请填写有效手机号（录入车牌时必填，用于短信 / 隐私号通知与换号验证）。" };
   }
-  if (requireNotification && !input.wechatWorkEnabled && !input.wechatEnabled && !input.wechatWorkWebhook && !input.smsEnabled && !input.privacyCallEnabled) {
-    return { error: "missing_notification_channel", message: "请至少开启一种通知方式（企业微信 / 微信 / 短信 / 隐私号）。" };
-  }
+  // 通知方式不再强制：未开启任何通道时默认走「直拨」（由创建接口按平台开关兜底校验）
   if (input.wechatWorkWebhook && !isHttpUrl(input.wechatWorkWebhook)) return { error: "invalid_wechat_work_webhook", message: "企业微信机器人 Webhook 必须是 http 或 https 地址。" };
   const requiresPhone = Boolean(input.smsEnabled || input.privacyCallEnabled);
   if ((requiresPhone && !hasStoredPhone) || input.ownerPhone) {

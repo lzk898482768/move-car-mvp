@@ -156,10 +156,12 @@ function ensureConfigBanner() {
 
 /* ---------------- 渠道文案 ---------------- */
 const CHANNEL_LABELS = {
+  notify_all: "一键通知",
   wechat_work: "企业微信",
   wechat: "微信通知",
   sms: "短信",
-  privacy_call: "隐私号呼叫",
+  privacy_call: "隐私拨号",
+  direct_call: "直拨",
 };
 function channelPill(ch, ok) {
   const label = CHANNEL_LABELS[ch] || ch;
@@ -177,30 +179,45 @@ function ownerOpenedChannels(vehicle) {
 function ownerChannelFields(vehicle) {
   const opened = new Set(ownerOpenedChannels(vehicle));
   const has = (c) => opened.has(c);
-  if (!opened.size) {
-    return `<p class="muted" style="grid-column:1/-1">超级管理员尚未开通任何通知方式，请联系平台管理员在后台「通知通道统一管理」中开启。</p>`;
+  const platformDirect = vehicle.global ? Boolean(vehicle.global.directCall) : true;
+  const platformPrivacy = has("privacy_call");
+  const platformSms = has("sms");
+  const platformNotify = has("wechat_work") || has("wechat");
+  if (!platformDirect && !platformPrivacy && !platformSms && !platformNotify) {
+    return `<p class="muted" style="grid-column:1/-1">超级管理员尚未开通任何通知方式，请联系平台管理员在后台「通知渠道」中开启。</p>`;
   }
-  const needPhone = has("sms") || has("privacy_call");
+  const needPhone = platformSms || platformPrivacy || platformDirect;
+  const privacy = Boolean(vehicle.privacyCallEnabled);
   const parts = [];
   const switchRow = (id, label, desc, checked) => `<div class="switch-row span-2">
         <div class="meta"><b>${label}</b><span>${desc}</span></div>
         <label class="switch"><input type="checkbox" id="${id}" ${checked ? "checked" : ""}><span class="track"></span><span class="thumb"></span></label>
       </div>`;
-  if (has("wechat_work")) {
-    parts.push(switchRow("f_wechat_work", "企业微信机器人", "匿名推送挪车提醒（平台统一配置）", Boolean(vehicle.wechatWorkEnabled)));
+  // 直拨（默认）：与隐私拨号互斥，仅作状态展示
+  if (platformDirect || platformPrivacy) {
+    parts.push(`<div class="switch-row span-2 ${privacy ? "is-off" : ""}" id="f_directRow">
+        <div class="meta"><b>直拨车主（默认）</b><span id="f_directDesc">${privacy ? "已由「隐私拨号」接管，访客通过隐私号接通" : "访客直接拨打你的手机号；开启隐私拨号后自动关闭"}</span></div>
+        <span class="pill ${privacy ? "off" : "ok"}" id="f_directState"><span class="dot"></span>${privacy ? "已关闭" : "使用中"}</span>
+      </div>`);
   }
-  if (has("wechat")) {
-    parts.push(switchRow("f_wechat", "微信通知", "匿名推送挪车提醒（平台统一配置）", Boolean(vehicle.wechatEnabled)));
+  if (platformPrivacy) {
+    parts.push(switchRow("f_privacy", "隐私拨号", "通过隐私号接通，隐藏双方真实号码；开启后「直拨」自动关闭", privacy));
   }
-  if (has("sms")) {
+  if (platformSms) {
     parts.push(switchRow("f_sms", "短信通知", "由平台短信通道下发到车主手机号", Boolean(vehicle.smsEnabled)));
   }
-  if (has("privacy_call")) {
-    parts.push(switchRow("f_privacy", "隐私号呼叫", "通过隐私号服务呼叫，隐藏真实号码", Boolean(vehicle.privacyCallEnabled)));
+  if (platformNotify) {
+    parts.push(switchRow("f_notify_all", "一键通知", "同时调用企业微信接口 + 微信公众号模板消息接口提醒你", Boolean(vehicle.notifyAllEnabled)));
+  }
+  if (has("wechat")) {
+    parts.push(`<label class="span-2">微信接收 OpenID（可选）
+        <input id="f_openid" placeholder="${vehicle.hasWechatOpenid ? "已设置（留空则保持不变）" : "留空则使用平台默认 OpenID"}" value="">
+        <span class="field-hint">关注公众号后可获取；留空则使用超管配置的默认 OpenID。</span>
+      </label>`);
   }
   if (needPhone) {
-    parts.push(`<label class="span-2">车主手机号（短信 / 隐私号需要）
-        <input id="f_phone" inputmode="tel" placeholder="${vehicle.ownerPhoneMasked ? `当前：${escapeHtml(vehicle.ownerPhoneMasked)}（留空则不变）` : "用于短信与隐私号呼叫"}" value="">
+    parts.push(`<label class="span-2">车主手机号
+        <input id="f_phone" inputmode="tel" placeholder="${vehicle.ownerPhoneMasked ? `当前：${escapeHtml(vehicle.ownerPhoneMasked)}（留空则不变）` : "用于短信 / 隐私拨号 / 直拨"}" value="">
       </label>`);
   }
   parts.push(`<button class="btn btn-primary span-2" id="saveChannels">保存渠道配置</button>`);
@@ -218,23 +235,45 @@ function setupBindPage() {
   const plateInput = createPlateInput($("#plateNumberHost"), { input: $("#plateNumber"), allowTypeSwitch: true });
 
   // 平台已开通的通道：未开通的直接隐藏（接口失败时保持全部可见，不阻断使用）
-  const opened = { wechat_work: true, wechat: true, sms: true, privacy_call: true };
+  const opened = { privacy_call: true, sms: true, notify_all: true, direct_call: true };
   const applyOpened = () => {
     const show = (name, on) => $$(`[data-channel="${name}"]`, form).forEach((el) => el.classList.toggle("hidden", !on));
-    show("wechat_work", opened.wechat_work);
-    show("wechat", opened.wechat);
-    show("sms", opened.sms);
     show("privacy_call", opened.privacy_call);
-    // 手机号必填且直接绑定车牌，无论开通了哪些通道都要显示（无 data-channel 属性）
-    const none = !opened.wechat_work && !opened.wechat && !opened.sms && !opened.privacy_call;
-    $("#noChannelNote")?.classList.toggle("hidden", !none);
+    show("sms", opened.sms);
+    show("notify_all", opened.notify_all);
+    show("direct_call", opened.direct_call);
+    // 直拨为默认方式；只要有一种可用方式即可创建
+    const anyMethod = opened.privacy_call || opened.sms || opened.notify_all || opened.direct_call;
+    $("#noChannelNote")?.classList.toggle("hidden", anyMethod);
     const submit = $('button[type="submit"]', form);
-    if (submit) submit.disabled = none;
+    if (submit) submit.disabled = !anyMethod;
   };
+  // 直拨 / 隐私拨号 联动：开启隐私拨号 → 直拨自动关闭
+  const syncCallMode = () => {
+    const privacy = Boolean(form.privacyCallEnabled?.checked);
+    const state = $("#directCallState", form);
+    const desc = $("#directCallDesc", form);
+    if (state) {
+      state.className = `pill ${privacy ? "off" : "ok"}`;
+      state.innerHTML = `<span class="dot"></span>${privacy ? "已关闭" : "使用中"}`;
+    }
+    if (desc) desc.textContent = privacy
+      ? "已由「隐私拨号」接管，访客将通过隐私号接通"
+      : "访客直接拨打你的手机号；开启隐私拨号后自动关闭";
+    $("#directCallRow", form)?.classList.toggle("is-off", privacy);
+  };
+  form.privacyCallEnabled?.addEventListener("change", syncCallMode);
+  syncCallMode();
+  applyOpened();
+
   api.publicChannels()
     .then((r) => {
       const ch = r.channels || {};
-      for (const k of Object.keys(opened)) if (typeof ch[k] === "boolean") opened[k] = ch[k];
+      if (typeof ch.privacy_call === "boolean") opened.privacy_call = ch.privacy_call;
+      if (typeof ch.sms === "boolean") opened.sms = ch.sms;
+      // 一键通知：企微或微信任一开通即可用
+      opened.notify_all = Boolean(ch.wechat_work || ch.wechat);
+      opened.direct_call = ch.direct_call !== false;
       applyOpened();
     })
     .catch(() => {});
@@ -243,10 +282,9 @@ function setupBindPage() {
     e.preventDefault();
     const plate = normalizePlate($("#plateNumber")?.value ?? "");
     const ownerPhone = normalizePhone(form.ownerPhone.value);
-    const wechatWorkEnabled = form.wechatWorkEnabled.checked;
-    const wechatEnabled = form.wechatEnabled.checked;
-    const smsEnabled = form.smsEnabled.checked;
     const privacyCallEnabled = form.privacyCallEnabled.checked;
+    const smsEnabled = form.smsEnabled.checked;
+    const notifyAllEnabled = form.notifyAllEnabled.checked;
     const ownerPin = form.ownerPin ? form.ownerPin.value.trim() : "";
 
     showResult(result, "正在创建…");
@@ -255,41 +293,19 @@ function setupBindPage() {
       validatePlate(plate);
       if (!isPhone(ownerPhone)) throw new Error("请填写有效手机号（录入车牌必填，用于通知与换号验证）。");
       if (ownerPin && !/^\d{4,12}$/.test(ownerPin)) throw new Error("管理密码请使用 4-12 位数字。");
-      const channels = [];
-      // 只能选择在平台已开通范围内的通知方式
-      if (opened.wechat_work && wechatWorkEnabled) channels.push("企业微信");
-      if (opened.wechat && wechatEnabled) channels.push("微信通知");
-      if (smsEnabled) {
-        if (!opened.sms) throw new Error("平台尚未开通短信通知。");
-        if (!isPhone(ownerPhone)) throw new Error("开启短信需填写有效手机号。");
-        channels.push("短信");
-      }
-      if (privacyCallEnabled) {
-        if (!opened.privacy_call) throw new Error("平台尚未开通隐私号呼叫。");
-        if (!isPhone(ownerPhone)) throw new Error("开启隐私号需填写有效手机号。");
-        channels.push("隐私号");
-      }
-      if (!channels.length) {
-        const names = [
-          opened.wechat_work ? "企业微信" : "",
-          opened.wechat ? "微信通知" : "",
-          opened.sms ? "短信" : "",
-          opened.privacy_call ? "隐私号" : "",
-        ].filter(Boolean);
-        throw new Error(
-          names.length
-            ? `请至少开启一种已开通的通知方式（${names.join(" / ")}）。`
-            : "平台尚未开通任何通知方式，请联系管理员。"
-        );
+      if (notifyAllEnabled && !opened.notify_all) throw new Error("平台尚未开通企业微信 / 微信通知。");
+      if (smsEnabled && !opened.sms) throw new Error("平台尚未开通短信通知。");
+      if (privacyCallEnabled && !opened.privacy_call) throw new Error("平台尚未开通隐私拨号。");
+      if (!privacyCallEnabled && !smsEnabled && !notifyAllEnabled && !opened.direct_call) {
+        throw new Error("平台尚未开通任何通知方式，请联系管理员。");
       }
 
       const data = await api.createVehicle({
         plateNumber: plate,
         ownerPhone,
-        wechatWorkEnabled,
-        wechatEnabled,
-        smsEnabled,
         privacyCallEnabled,
+        smsEnabled,
+        notifyAllEnabled,
         ownerPin,
       });
       saveOwnerToken(data.ownerToken, data.maskedPlate);
@@ -378,9 +394,11 @@ function setupMovePage() {
       showResult(
         vehicleEl,
         `<div class="plate-big">${escapeHtml(v.maskedPlate)}</div>
-         <p class="privacy-note">为保护双方隐私，本次通知将采用 <b>${chs.length ? "匿名方式" : "平台通道"}</b> 送达车主，不会暴露你的号码。</p>`
+         <p class="privacy-note">${v.callMode === "direct"
+            ? "该车主使用 <b>直拨</b>（默认方式）：点击下方按钮直接拨打车主号码。"
+            : `为保护双方隐私，本次通知将采用 <b>${chs.length ? "匿名方式" : "平台通道"}</b> 送达车主，不会暴露你的号码。`}</p>`
       );
-      // 隐私号不可用 → 回退为直接拨打（需管理员开启直拨 + 车主登记号码）
+      // 拨打方式：隐私拨号（隐私号接通）或 直拨（默认，直接拨打车主号码）
       const directBtn = $("#directCallButton");
       const directNote = $("#directCallNote");
       const dc = v.directCall;
@@ -388,7 +406,9 @@ function setupMovePage() {
         directBtn.href = `tel:${dc.phone}`;
         directBtn.classList.remove("hidden");
         directNote?.classList.remove("hidden");
-        if (notifyBtn) notifyBtn.textContent = "通知车主（短信 / 消息）";
+        // 直拨为默认方式 → 设为主要操作
+        directBtn.classList.add("btn-primary");
+        if (notifyBtn) { notifyBtn.textContent = "通知车主（短信 / 消息）"; notifyBtn.classList.remove("btn-primary"); }
       }
       if (chs.length === 0 && !(dc?.enabled && dc.phone)) {
         showResult(resultEl, "该车主暂未配置任何通知方式，请联系车主本人。", true);
@@ -582,13 +602,12 @@ async function renderDashboard(ownerToken) {
   }
 
   const moveUrl = buildMoveUrl(vehicle.vehicleToken);
-  const enabled = {
-    wechat_work: Boolean(vehicle.wechatWorkEnabled),
-    wechat: Boolean(vehicle.wechatEnabled),
-    sms: Boolean(vehicle.smsEnabled),
-    privacy_call: Boolean(vehicle.privacyCallEnabled),
-  };
-  const activeChannels = Object.keys(enabled).filter((k) => enabled[k]);
+  // 当前生效的通知方式（直拨为默认；开启隐私拨号后由隐私拨号接管）
+  const pills = [];
+  if (vehicle.notifyAllEnabled) pills.push(channelPill("notify_all", true));
+  if (vehicle.smsEnabled) pills.push(channelPill("sms", true));
+  if (vehicle.privacyCallEnabled) pills.push(channelPill("privacy_call", true));
+  else if (vehicle.global?.directCall) pills.push(channelPill("direct_call", true));
 
   mount.innerHTML = `
   <div class="dash-grid fade-in">
@@ -612,11 +631,9 @@ async function renderDashboard(ownerToken) {
 
     <!-- 通知渠道配置 -->
     <section class="card">
-      <h2>通知渠道</h2>
+      <h2>通知方式</h2>
       <div class="channels" style="margin-bottom:14px">
-        ${ownerOpenedChannels(vehicle).length
-          ? ownerOpenedChannels(vehicle).map((c) => channelPill(c, enabled[c])).join("")
-          : `<span class="pill off"><span class="dot"></span>平台暂未开通任何通知方式</span>`}
+        ${pills.length ? pills.join("") : `<span class="pill off"><span class="dot"></span>平台暂未开通任何通知方式</span>`}
       </div>
       <div class="grid-form">
         ${ownerChannelFields(vehicle)}
@@ -743,21 +760,41 @@ async function renderDashboard(ownerToken) {
     });
   }
 
+  // 隐私拨号 ↔ 直拨 状态联动
+  const privacyBox = $("#f_privacy", mount);
+  if (privacyBox) {
+    privacyBox.addEventListener("change", () => {
+      const privacy = privacyBox.checked;
+      const row = $("#f_directRow", mount);
+      const state = $("#f_directState", mount);
+      const desc = $("#f_directDesc", mount);
+      row?.classList.toggle("is-off", privacy);
+      if (state) {
+        state.className = `pill ${privacy ? "off" : "ok"}`;
+        state.innerHTML = `<span class="dot"></span>${privacy ? "已关闭" : "使用中"}`;
+      }
+      if (desc) desc.textContent = privacy
+        ? "已由「隐私拨号」接管，访客通过隐私号接通"
+        : "访客直接拨打你的手机号；开启隐私拨号后自动关闭";
+    });
+  }
+
   $("#saveChannels", mount).onclick = async () => {
     // 未开通的通道字段不会渲染，取值时做空值兜底
     const chk = (id) => ($(`#${id}`, mount) ? $("#" + id, mount).checked : false);
-    const phone = normalizePhone(($(("#f_phone", mount)) ? $("#f_phone", mount).value.trim() : ""));
-    const wechatWork = chk("f_wechat_work");
-    const wechat = chk("f_wechat");
+    const txt = (id) => ($(`#${id}`, mount) ? $("#" + id, mount).value.trim() : "");
+    const phone = normalizePhone(txt("f_phone"));
+    const openid = txt("f_openid");
     const sms = chk("f_sms");
     const privacy = chk("f_privacy");
+    const notifyAll = chk("f_notify_all");
 
     // 只提交「实际改动过」的开关与手机号
     const patch = {};
-    if (wechatWork !== Boolean(vehicle.wechatWorkEnabled)) patch.wechatWorkEnabled = wechatWork;
-    if (wechat !== Boolean(vehicle.wechatEnabled)) patch.wechatEnabled = wechat;
+    if (notifyAll !== Boolean(vehicle.notifyAllEnabled)) patch.notifyAllEnabled = notifyAll;
     if (sms !== Boolean(vehicle.smsEnabled)) patch.smsEnabled = sms;
     if (privacy !== Boolean(vehicle.privacyCallEnabled)) patch.privacyCallEnabled = privacy;
+    if (openid) patch.wechatOpenid = openid;
     if (phone) patch.ownerPhone = phone;
 
     if (!Object.keys(patch).length) return toast("没有需要保存的改动", "");
@@ -765,7 +802,7 @@ async function renderDashboard(ownerToken) {
     const willSms = "smsEnabled" in patch ? patch.smsEnabled : Boolean(vehicle.smsEnabled);
     const willPrivacy = "privacyCallEnabled" in patch ? patch.privacyCallEnabled : Boolean(vehicle.privacyCallEnabled);
     if ((willSms || willPrivacy) && !phone && !vehicle.hasPhone) {
-      return toast("开启短信 / 隐私号需填写手机号", "err");
+      return toast("开启短信 / 隐私拨号需填写手机号", "err");
     }
     // 换号必验证：短信验证码 或 管理密码
     if (phone) {
@@ -813,23 +850,13 @@ async function renderDashboard(ownerToken) {
 /* ============================================================
    超级管理员后台（admin）
    ============================================================ */
-const ADMIN_GROUPS = [
-  { title: "腾讯云 · 短信与 OCR", keys: ["tencent_secret_id", "tencent_secret_key", "tencent_sms_app_id", "tencent_sms_sign_name", "tencent_sms_template_id", "tencent_sms_region", "tencent_ocr_region"] },
-  { title: "企业微信 · 默认通道", keys: ["wechat_work_webhook"] },
-  { title: "微信通知 · 默认通道", keys: ["wechat_notify_webhook"] },
-  { title: "隐私号呼叫", keys: ["privacy_call_webhook_url", "privacy_call_webhook_token"] },
-  { title: "其他", keys: ["default_phone_country_code", "ocr_demo_plate", "ocr_demo_mode"] },
-  { title: "平台通道开关", keys: ["sms_enabled_global", "wechat_enabled_global", "wechat_notify_enabled_global", "privacy_enabled_global", "direct_call_enabled_global"] },
-];
-const BOOL_KEYS = new Set(["ocr_demo_mode", "sms_enabled_global", "wechat_enabled_global", "wechat_notify_enabled_global", "privacy_enabled_global", "direct_call_enabled_global"]);
-
 // 通道分组兜底（正常由后端 /api/admin/config 返回 groups）
 const CHANNEL_GROUPS_FALLBACK = [
   { key: "wechat_work", label: "企业微信机器人", icon: "💬" },
-  { key: "wechat", label: "微信通知", icon: "📨" },
+  { key: "wechat", label: "微信通知（公众号模板消息）", icon: "📨" },
   { key: "sms", label: "短信通知", icon: "📱" },
-  { key: "privacy_call", label: "隐私号呼叫", icon: "☎️" },
-  { key: "direct_call", label: "直拨车主（回退）", icon: "📞" },
+  { key: "privacy_call", label: "隐私拨号", icon: "☎️" },
+  { key: "direct_call", label: "直拨（默认回退）", icon: "📞" },
 ];
 
 /* ---------------- 统一通知配置面板渲染 ---------------- */
@@ -898,11 +925,11 @@ function renderChannelConfig(settings, groups, status = {}) {
 }
 
 const CHANNEL_HINTS = {
-  wechat_work: "车主未单独配置时使用这里的默认 Webhook",
-  wechat: "微信通知（超管统一配置，匿名推送挪车提醒）",
+  wechat_work: "超管统一配置企微机器人 Webhook；车主侧仅一个开关",
+  wechat: "调用公众号模板消息接口（AppID + AppSecret + 模板ID），非 Webhook",
   sms: "支持腾讯云 / 阿里云 / 自定义 Webhook 三家服务商",
   privacy_call: "支持自定义 Webhook / 腾讯云号码保护 / 阿里云号码保护",
-  direct_call: "隐私号未开通时，访客可直接拨打车主真实号码（请谨慎开启）",
+  direct_call: "隐私拨号未开启时的默认方式：访客直接拨打车主真实号码",
 };
 
 // 服务商下拉联动：只显示当前服务商需要的字段
@@ -1002,17 +1029,27 @@ async function renderAdminConsole(token) {
   const byKey = Object.fromEntries(settings.map((s) => [s.key, s]));
 
   mount.innerHTML = `
-  <div class="dash-grid fade-in">
-    <section class="card span-2" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
-      <div><h2 style="margin:0">🛡️ 超级管理员控制台</h2><p class="muted" style="margin:4px 0 0">车牌管理 · 全局通知渠道 · 广告位 · 车牌查手机号 · 账号管理</p></div>
+  <div class="fade-in">
+    <section class="card admin-topbar" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
+      <div><h2 style="margin:0">🛡️ 超级管理员控制台</h2><p class="muted" style="margin:4px 0 0">按标签页分区管理，告别单页堆叠</p></div>
       <div class="actions row" style="margin:0;gap:8px">
         <button class="btn btn-sm btn-ghost" id="adChangePwd">修改我的密码</button>
         <button class="btn btn-sm btn-ghost" id="adLogout">退出登录</button>
       </div>
     </section>
 
+    <nav class="admin-tabs" id="adminTabs">
+      <button type="button" class="admin-tab active" data-tab="vehicles">🚗 车牌管理</button>
+      <button type="button" class="admin-tab" data-tab="channels">🔔 通知渠道</button>
+      <button type="button" class="admin-tab" data-tab="lookup">🔍 查车主电话</button>
+      <button type="button" class="admin-tab" data-tab="calls">📞 拨号日志</button>
+      <button type="button" class="admin-tab" data-tab="ads">🖼️ 广告位</button>
+      <button type="button" class="admin-tab" data-tab="account">👤 账号管理</button>
+    </nav>
+
     <!-- 车牌管理 -->
-    <section class="card span-2">
+    <div class="admin-tab-panel" data-panel="vehicles">
+    <section class="card">
       <h2>🚗 车牌管理</h2>
       <p class="muted">集中管理所有挪车码绑定：新增 / 编辑 / 删除 / 批量导入导出，也可重置车主查看密码或直接进入其车主后台。</p>
 
@@ -1032,13 +1069,15 @@ async function renderAdminConsole(token) {
       <div id="vhResult" class="result hidden" style="margin-top:10px"></div>
       <details style="margin-top:12px">
         <summary class="muted" style="cursor:pointer">导入格式说明</summary>
-        <p class="field-hint" style="margin-top:8px">支持 CSV 与 JSON。CSV 表头顺序：<b>车牌号,查看密码,手机号,短信通知,隐私号呼叫,企业微信Webhook,微信通知</b>（表头行可省略；开关填「是/否」）。重复车牌会自动跳过，不会覆盖已有绑定。</p>
+        <p class="field-hint" style="margin-top:8px">支持 CSV 与 JSON。CSV 表头顺序：<b>车牌号,查看密码,手机号,短信通知,隐私拨号,一键通知,微信OpenID</b>（表头行可省略；开关填「是/否」；未开启任何方式则为「直拨」）。重复车牌会自动跳过，不会覆盖已有绑定。</p>
       </details>
     </section>
+    </div>
 
     <!-- 统一通知通道配置 -->
-    <section class="card span-2">
-      <h2>🔔 通知通道统一管理</h2>
+    <div class="admin-tab-panel hidden" data-panel="channels">
+    <section class="card">
+      <h2>🔔 通知渠道</h2>
       <p class="muted">所有通知接口都在这里配置与开关。车主后台只会出现此处<b>已开通</b>的通道。密钥字段显示为 ${MASKED}，保持不变即可，填写新值才会覆盖。</p>
       <form id="adminConfigForm">
         ${renderChannelConfig(settings, channelGroups, channelStatus)}
@@ -1048,8 +1087,10 @@ async function renderAdminConsole(token) {
         <div id="adminCfgResult" class="result hidden" style="margin-top:10px"></div>
       </form>
     </section>
+    </div>
 
     <!-- 车牌查手机号 -->
+    <div class="admin-tab-panel hidden" data-panel="lookup">
     <section class="card">
       <h2>🔍 按车牌查车主电话</h2>
       <p class="muted">通知无法送达时，用于人工联系车主。查询行为仅限管理员账号。</p>
@@ -1062,9 +1103,11 @@ async function renderAdminConsole(token) {
       </form>
       <div id="adminLookupResult" class="result hidden" style="margin-top:12px"></div>
     </section>
+    </div>
 
     <!-- 拨号日志 -->
-    <section class="card span-2">
+    <div class="admin-tab-panel hidden" data-panel="calls">
+    <section class="card">
       <h2>📞 拨号日志</h2>
       <p class="muted">隐私拨号与直拨都会记录（含拨号方 / 被叫 / 隐私中间号）。支持按条件筛选、批量导出与批量删除。</p>
 
@@ -1114,9 +1157,11 @@ async function renderAdminConsole(token) {
       <div id="clListBox" style="margin-top:12px"><p class="muted">正在加载…</p></div>
       <div id="clResult" class="result hidden" style="margin-top:10px"></div>
     </section>
+    </div>
 
     <!-- 广告位管理 -->
-    <section class="card span-2">
+    <div class="admin-tab-panel hidden" data-panel="ads">
+    <section class="card">
       <h2>🖼️ 广告位管理</h2>
       <p class="muted">只需填写广告<strong>图片链接</strong>，无需上传图片。某个位置没有投放中的广告时，前端会自动隐藏该广告位，不会出现空白块。</p>
       <div id="adListBox" style="margin-top:12px"><p class="muted">正在加载…</p></div>
@@ -1141,8 +1186,10 @@ async function renderAdminConsole(token) {
       </form>
       <div id="adResult" class="result hidden" style="margin-top:10px"></div>
     </section>
+    </div>
 
     <!-- 管理员账号 -->
+    <div class="admin-tab-panel hidden" data-panel="account">
     <section class="card">
       <h2>管理员账号</h2>
       <div id="adminAccountList"><p class="muted">正在加载…</p></div>
@@ -1160,7 +1207,22 @@ async function renderAdminConsole(token) {
       </form>
       <div id="adminAcctResult" class="result hidden" style="margin-top:10px"></div>
     </section>
+    </div>
   </div>`;
+
+  // 标签页切换（一次只显示一个区块，避免单页堆叠）
+  $$(".admin-tab", mount).forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const tab = btn.dataset.tab;
+      $$(".admin-tab", mount).forEach((b) => b.classList.toggle("active", b === btn));
+      $$(".admin-tab-panel", mount).forEach((p) => p.classList.toggle("hidden", p.dataset.panel !== tab));
+      try { localStorage.setItem("adminTab", tab); } catch {}
+    });
+  });
+  try {
+    const last = localStorage.getItem("adminTab");
+    if (last) $(`.admin-tab[data-tab="${last}"]`, mount)?.click();
+  } catch {}
 
   $("#adLogout", mount).onclick = async () => {
     try { await api.adminLogout(token); } catch {}
@@ -1238,11 +1300,11 @@ async function renderAdminConsole(token) {
     try {
       const r = await api.adminExportVehicles(token);
       const list = r.vehicles || [];
-      const rows = [["车牌号", "查看密码", "手机号", "短信通知", "隐私号呼叫", "企业微信Webhook", "微信通知", "绑定ID", "创建时间"]];
+      const rows = [["车牌号", "查看密码", "手机号", "短信通知", "隐私拨号", "一键通知", "微信OpenID", "绑定ID", "创建时间"]];
       list.forEach((v) => rows.push([
         v.plateNumber, "", v.ownerPhone,
         v.smsEnabled ? "是" : "否", v.privacyCallEnabled ? "是" : "否",
-        v.wechatWorkWebhook, v.wechatEnabled ? "是" : "否", v.id, fmtDate(v.createdAt),
+        v.notifyAllEnabled ? "是" : "否", v.wechatOpenid || "", v.id, fmtDate(v.createdAt),
       ]));
       const csv = rows
         .map((cells) => cells.map((c) => {
@@ -1514,10 +1576,9 @@ function renderAdminVehiclesList(token, vehicles) {
           <div class="t">创建 ${escapeHtml(fmtDate(v.createdAt))}</div>
         </div>
         <div class="channels" style="flex:1 1 100%">
-          ${channelPill("wechat_work", Boolean(v.wechatWorkEnabled))}
-          ${channelPill("wechat", Boolean(v.wechatEnabled))}
+          ${channelPill("notify_all", Boolean(v.notifyAllEnabled))}
           ${channelPill("sms", Boolean(v.smsEnabled))}
-          ${channelPill("privacy_call", Boolean(v.privacyCallEnabled))}
+          ${v.privacyCallEnabled ? channelPill("privacy_call", true) : channelPill("direct_call", true)}
         </div>
         <div class="actions row" style="margin:0;gap:6px;flex:1 1 100%">
           <button class="btn btn-sm btn-ghost" data-vh-edit="${v.id}">编辑</button>
@@ -1716,28 +1777,24 @@ function openVehicleEditor(token, vehicle) {
           <input id="vePlate" value="${escapeHtml(vehicle?.plateNumber || "")}" placeholder="例如 粤A12345" />
           <div id="vePlateHost" class="plate-input-host"></div>
         </label>
-        <label class="span-2">车主手机号（短信 / 隐私号需要）
+        <label class="span-2">车主手机号（短信 / 隐私拨号 / 直拨需要）
           <input id="vePhone" value="${escapeHtml(vehicle?.ownerPhone || "")}" placeholder="11 位手机号" />
         </label>
-        <label class="span-2">企业微信机器人 Webhook（留空则用平台默认）
-          <input id="veWechat" value="${escapeHtml(vehicle?.wechatWorkWebhook || "")}" placeholder="https://qyapi.weixin.qq.com/..." />
-        </label>
         <div class="switch-row span-2">
-          <div class="meta"><b>企业微信机器人</b><span>通过企业微信群机器人推送挪车提醒</span></div>
-          <label class="switch"><input type="checkbox" id="veWechatWorkEnabled" ${vehicle?.wechatWorkEnabled ? "checked" : ""}><span class="track"></span><span class="thumb"></span></label>
-        </div>
-        <div class="switch-row span-2">
-          <div class="meta"><b>微信通知</b><span>使用平台统一配置的微信通知（匿名推送）</span></div>
-          <label class="switch"><input type="checkbox" id="veWechatEnabled" ${vehicle?.wechatEnabled ? "checked" : ""}><span class="track"></span><span class="thumb"></span></label>
+          <div class="meta"><b>一键通知</b><span>同时调用企业微信接口 + 微信公众号模板消息接口</span></div>
+          <label class="switch"><input type="checkbox" id="veNotifyAll" ${vehicle?.notifyAllEnabled ? "checked" : ""}><span class="track"></span><span class="thumb"></span></label>
         </div>
         <div class="switch-row span-2">
           <div class="meta"><b>短信通知</b><span>需填手机号 + 平台短信通道</span></div>
           <label class="switch"><input type="checkbox" id="veSms" ${vehicle?.smsEnabled ? "checked" : ""}><span class="track"></span><span class="thumb"></span></label>
         </div>
         <div class="switch-row span-2">
-          <div class="meta"><b>隐私号呼叫</b><span>需填手机号 + 平台隐私号通道</span></div>
+          <div class="meta"><b>隐私拨号</b><span>需填手机号 + 平台隐私号通道；关闭则为直拨（默认）</span></div>
           <label class="switch"><input type="checkbox" id="vePrivacy" ${vehicle?.privacyCallEnabled ? "checked" : ""}><span class="track"></span><span class="thumb"></span></label>
         </div>
+        <label class="span-2">微信接收 OpenID（可选，留空用平台默认）
+          <input id="veOpenid" value="${escapeHtml(vehicle?.wechatOpenid || "")}" placeholder="关注公众号后获取的 OpenID" />
+        </label>
         <label class="span-2">${isEdit ? "重置查看密码（留空则不变）" : "查看密码（可选，4-12 位数字）"}
           <input id="vePin" placeholder="4-12 位数字" />
         </label>
@@ -1755,17 +1812,16 @@ function openVehicleEditor(token, vehicle) {
       const payload = {
         plateNumber: normalizePlate($("#vePlate")?.value ?? ""),
         ownerPhone: $("#vePhone").value.trim(),
-        wechatWorkWebhook: $("#veWechat").value.trim(),
-        wechatWorkEnabled: $("#veWechatWorkEnabled").checked,
-        wechatEnabled: $("#veWechatEnabled").checked,
+        notifyAllEnabled: $("#veNotifyAll").checked,
         smsEnabled: $("#veSms").checked,
         privacyCallEnabled: $("#vePrivacy").checked,
+        wechatOpenid: $("#veOpenid").value.trim(),
       };
       const pin = $("#vePin").value.trim();
       if (pin) payload.ownerPin = pin;
       if (vePlateInput && !vePlateInput.isValid()) return toast("请点选完整车牌（普通 7 位 / 新能源 8 位）", "err");
       if (payload.smsEnabled || payload.privacyCallEnabled) {
-        if (!payload.ownerPhone && !vehicle?.ownerPhone) return toast("开启短信/隐私号需填写手机号", "err");
+        if (!payload.ownerPhone && !vehicle?.ownerPhone) return toast("开启短信/隐私拨号需填写手机号", "err");
       }
       try {
         const r = isEdit
@@ -1841,7 +1897,7 @@ function openAdminPasswordModal(token) {
 }
 
 /* ---------------- 导入解析（CSV / JSON） ---------------- */
-const IMPORT_HEADERS = ["车牌号", "查看密码", "手机号", "短信通知", "隐私号呼叫", "企业微信Webhook", "微信通知"];
+const IMPORT_HEADERS = ["车牌号", "查看密码", "手机号", "短信通知", "隐私拨号", "一键通知", "微信OpenID"];
 
 function truthyFlag(value) {
   if (typeof value === "boolean") return value;
@@ -1854,9 +1910,9 @@ function normalizeImportItem(raw) {
     ownerPin: String(raw.ownerPin ?? raw["查看密码"] ?? raw["管理密码"] ?? raw.pin ?? "").trim(),
     ownerPhone: String(raw.ownerPhone ?? raw["手机号"] ?? raw.phone ?? "").trim(),
     smsEnabled: truthyFlag(raw.smsEnabled ?? raw["短信通知"]),
-    privacyCallEnabled: truthyFlag(raw.privacyCallEnabled ?? raw["隐私号呼叫"]),
-    wechatWorkWebhook: String(raw.wechatWorkWebhook ?? raw["企业微信Webhook"] ?? "").trim(),
-    wechatEnabled: truthyFlag(raw.wechatEnabled ?? raw["微信通知"]),
+    privacyCallEnabled: truthyFlag(raw.privacyCallEnabled ?? raw["隐私拨号"] ?? raw["隐私号呼叫"]),
+    notifyAllEnabled: truthyFlag(raw.notifyAllEnabled ?? raw["一键通知"]),
+    wechatOpenid: String(raw.wechatOpenid ?? raw["微信OpenID"] ?? raw["微信Openid"] ?? "").trim(),
   };
 }
 
@@ -1881,8 +1937,8 @@ function parseVehicleImport(text) {
       ownerPhone: cells[2],
       smsEnabled: cells[3],
       privacyCallEnabled: cells[4],
-      wechatWorkWebhook: cells[5],
-      wechatEnabled: cells[6],
+      notifyAllEnabled: cells[5],
+      wechatOpenid: cells[6],
     }));
   }
   return out.filter((x) => x.plateNumber);
