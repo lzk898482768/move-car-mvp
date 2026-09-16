@@ -33,7 +33,7 @@ console.log("\n=== 1. 创建挪车码（含管理密码 + 企业微信/短信）
 const created = await call("POST", "/api/vehicles", {
   body: {
     plateNumber: plate,
-    wechatWorkWebhook: "https://example.com/wechat-hook",
+    wechatWorkEnabled: true,
     ownerPhone: "13800000001",
     smsEnabled: true,
     privacyCallEnabled: false,
@@ -48,18 +48,18 @@ ok("拿到 ownerToken / vehicleToken", Boolean(ownerToken && vehicleToken));
 console.log("\n=== 2. 车主后台读取（验证配置回填） ===");
 const ownerGet = await call("GET", `/api/owner/${ownerToken}/vehicle`);
 ok("返回 200", ownerGet.status === 200, JSON.stringify(ownerGet.data));
-ok("回填企业微信 Webhook", ownerGet.data?.wechatWorkWebhook === "https://example.com/wechat-hook", String(ownerGet.data?.wechatWorkWebhook));
+ok("回填企业微信开关", ownerGet.data?.wechatWorkEnabled === true, String(ownerGet.data?.wechatWorkEnabled));
 ok("回填手机号（脱敏）", ownerGet.data?.ownerPhoneMasked === "138****01", String(ownerGet.data?.ownerPhoneMasked));
 ok("smsEnabled = true", ownerGet.data?.smsEnabled === true);
 ok("hasPin = true", ownerGet.data?.hasPin === true);
 
 console.log("\n=== 3. 修改配置并重新读取（验证「保存生效」） ===");
 const patched = await call("PATCH", `/api/owner/${ownerToken}/vehicle`, {
-  body: { wechatWorkWebhook: "https://example.com/wechat-hook-v2", smsEnabled: false },
+  body: { wechatWorkEnabled: false, smsEnabled: false },
 });
 ok("PATCH 200", patched.status === 200, JSON.stringify(patched.data));
 const ownerGet2 = await call("GET", `/api/owner/${ownerToken}/vehicle`);
-ok("Webhook 已更新", ownerGet2.data?.wechatWorkWebhook === "https://example.com/wechat-hook-v2", String(ownerGet2.data?.wechatWorkWebhook));
+ok("企业微信开关已更新", ownerGet2.data?.wechatWorkEnabled === false, String(ownerGet2.data?.wechatWorkEnabled));
 ok("smsEnabled 已关闭（不再被误重置为开）", ownerGet2.data?.smsEnabled === false, String(ownerGet2.data?.smsEnabled));
 ok("手机号仍保留（留空不改）", ownerGet2.data?.ownerPhoneMasked === "138****01", String(ownerGet2.data?.ownerPhoneMasked));
 

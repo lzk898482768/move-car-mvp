@@ -26,7 +26,7 @@ const PRIVACY_VENDOR_OPTIONS = [
 // 通道分组（决定超管后台的分区与「是否开通」状态）
 const CHANNEL_GROUPS = [
   { key: "wechat_work", label: "企业微信机器人", icon: "💬" },
-  { key: "showdoc", label: "ShowDoc", icon: "📄" },
+  { key: "wechat", label: "微信通知", icon: "📨" },
   { key: "sms", label: "短信通知", icon: "📱" },
   { key: "privacy_call", label: "隐私号呼叫", icon: "☎️" },
   { key: "direct_call", label: "直拨车主（回退）", icon: "📞" },
@@ -39,10 +39,9 @@ const GLOBAL_SETTINGS = [
   { key: "wechat_enabled_global", secret: false, label: "启用企业微信通知", def: "true", group: "wechat_work", type: "bool" },
   { key: "wechat_work_webhook", secret: true, label: "企业微信默认 Webhook", group: "wechat_work" },
 
-  /* ---- ShowDoc ---- */
-  { key: "showdoc_enabled_global", secret: false, label: "启用 ShowDoc 通知", def: "true", group: "showdoc", type: "bool" },
-  { key: "showdoc_webhook", secret: true, label: "ShowDoc 默认 Webhook", group: "showdoc" },
-  { key: "showdoc_token", secret: true, label: "ShowDoc Token", group: "showdoc" },
+  /* ---- 微信通知（车主仅开关，Webhook 由超管统一配置） ---- */
+  { key: "wechat_notify_enabled_global", secret: false, label: "启用微信通知", def: "true", group: "wechat", type: "bool" },
+  { key: "wechat_notify_webhook", secret: true, label: "微信通知 Webhook（超管统一配置）", group: "wechat" },
 
   /* ---- 短信：多平台 ---- */
   { key: "sms_enabled_global", secret: false, label: "启用短信通知", def: "true", group: "sms", type: "bool" },
@@ -142,6 +141,8 @@ function matchRoute(method, pathname) {
     ["POST", /^\/api\/vehicles$/, handleCreateVehicle],
     ["GET", /^\/api\/vehicles\/([^/]+)\/public$/, handlePublicVehicle, ["vehicleToken"]],
     ["POST", /^\/api\/vehicles\/([^/]+)\/notify$/, handleNotify, ["vehicleToken"]],
+    // 访客：直拨写拨号日志（直拨发生在客户端，需主动上报）
+    ["POST", /^\/api\/vehicles\/([^/]+)\/call-log$/, handleVisitorCallLog, ["vehicleToken"]],
     // 平台已开通的通知通道（公开，供车主端筛选）
     ["GET", /^\/api\/channels$/, handlePublicChannels],
     // 广告位（公开读取，仅返回已启用）
@@ -152,6 +153,8 @@ function matchRoute(method, pathname) {
     ["PATCH", /^\/api\/owner\/([^/]+)\/vehicle$/, handlePatchOwnerVehicle, ["ownerToken"]],
     ["DELETE", /^\/api\/owner\/([^/]+)\/vehicle$/, handleDeleteOwnerVehicle, ["ownerToken"]],
     ["POST", /^\/api\/owner\/([^/]+)\/vehicle\/regenerate-token$/, handleRegenerateVehicleToken, ["ownerToken"]],
+    // 车主：更换手机号前下发短信验证码
+    ["POST", /^\/api\/owner\/([^/]+)\/phone\/send-code$/, handleOwnerPhoneSendCode, ["ownerToken"]],
     // 超级管理员
     ["POST", /^\/api\/admin\/login$/, handleAdminLogin],
     ["POST", /^\/api\/admin\/logout$/, handleAdminLogout],
@@ -173,6 +176,10 @@ function matchRoute(method, pathname) {
     ["PUT", /^\/api\/admin\/vehicles\/(\d+)$/, handleAdminVehicleUpdate, ["id"], "admin"],
     ["DELETE", /^\/api\/admin\/vehicles\/(\d+)$/, handleAdminVehicleDelete, ["id"], "admin"],
     ["GET", /^\/api\/admin\/vehicles\/(\d+)\/owner-token$/, handleAdminVehicleOwnerToken, ["id"], "admin"],
+    // 超级管理员：拨号日志
+    ["GET", /^\/api\/admin\/call-logs$/, handleAdminCallLogsList, [], "admin"],
+    ["GET", /^\/api\/admin\/call-logs\/export$/, handleAdminCallLogsExport, [], "admin"],
+    ["POST", /^\/api\/admin\/call-logs\/bulk-delete$/, handleAdminCallLogsBulkDelete, [], "admin"],
     ["POST", /^\/api\/admin\/password$/, handleAdminPasswordChange, [], "admin"],
   ];
   for (const [routeMethod, pattern, handler, keys = [], guard] of routes) {
@@ -220,7 +227,7 @@ async function handleHealth({ env }) {
   const smsReady = isOn(g.sms_enabled_global) && smsVendorReady(g);
   const privacyReady = isOn(g.privacy_enabled_global) && privacyVendorReady(g);
   const wechatWorkGlobal = isOn(g.wechat_enabled_global) && Boolean(g.wechat_work_webhook);
-  const showdocGlobal = isOn(g.showdoc_enabled_global) && Boolean(g.showdoc_webhook);
+  const wechatNotifyGlobal = isOn(g.wechat_notify_enabled_global) && Boolean(g.wechat_notify_webhook);
   return json({
     status: "ok",
     d1: Boolean(env.DB),
@@ -235,10 +242,10 @@ async function handleHealth({ env }) {
     sms: smsReady,
     privacy_call: privacyReady,
     wechatWorkGlobal,
-    showdocGlobal,
+    wechatNotifyGlobal,
     directCall: isOn(g.direct_call_enabled_global),
     channels: Object.fromEntries(CHANNEL_GROUPS.map((c) => [c.key, channelOpened(g, c.key)])),
-    globalConfigured: Boolean(smsReady || privacyReady || wechatWorkGlobal || showdocGlobal),
+    globalConfigured: Boolean(smsReady || privacyReady || wechatWorkGlobal || wechatNotifyGlobal),
   });
 }
 
@@ -318,13 +325,29 @@ function validateOcrImage(image, env) {
 async function handleCreateVehicle({ request, env }) {
   assertConfig(env, ["DB", "DATA_ENCRYPTION_KEY"]);
   const input = await readJson(request);
-  const validationError = validateVehicleInput(input, { requireNotification: true });
+  const validationError = validateVehicleInput(input, { requireNotification: true, requirePhone: true });
   if (validationError) return json(validationError, 400);
+  // 一个车牌只能录入一次：重复录入引导到「找回」
+  const plateHash = await sha256Hex(normalizePlate(input.plateNumber));
+  const exists = await env.DB.prepare("SELECT id, plate_number_masked, owner_pin_hash FROM vehicles WHERE plate_number_hash = ?")
+    .bind(plateHash)
+    .first();
+  if (exists) {
+    return json(
+      {
+        error: "plate_exists",
+        message: "该车牌已录入过，一个车牌只能录入一次。请用「车牌 + 管理密码」找回管理入口。",
+        maskedPlate: exists.plate_number_masked,
+        canRecover: Boolean(exists.owner_pin_hash),
+      },
+      409
+    );
+  }
   // 车主只能使用平台已开通的通知方式
   const g = await loadGlobal(env);
   const wanted = [];
-  if (input.wechatWorkWebhook) wanted.push("wechat_work");
-  if (input.showdocWebhook) wanted.push("showdoc");
+  if (input.wechatWorkEnabled || input.wechatWorkWebhook) wanted.push("wechat_work");
+  if (input.wechatEnabled) wanted.push("wechat");
   if (input.smsEnabled) wanted.push("sms");
   if (input.privacyCallEnabled) wanted.push("privacy_call");
   const usable = wanted.filter((c) => channelOpened(g, c));
@@ -347,10 +370,11 @@ async function insertVehicleRecord(env, input) {
   const res = await env.DB.prepare(
     `INSERT INTO vehicles (
       vehicle_token, owner_token, plate_number_masked, plate_number_hash, plate_number_encrypted,
-      owner_phone_encrypted, showdoc_webhook, showdoc_token_encrypted,
-      wechat_work_webhook_encrypted, sms_enabled, privacy_call_enabled, owner_pin_hash,
+      owner_phone_encrypted, showdoc_webhook,
+      wechat_work_webhook_encrypted, wechat_work_enabled, wechat_enabled,
+      sms_enabled, privacy_call_enabled, owner_pin_hash,
       created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   )
     .bind(
       vehicleToken,
@@ -359,9 +383,10 @@ async function insertVehicleRecord(env, input) {
       await sha256Hex(plateNumber),
       await encryptText(env, plateNumber),
       input.ownerPhone ? await encryptText(env, normalizePhone(input.ownerPhone)) : null,
-      input.showdocWebhook ? normalizeHttpUrl(input.showdocWebhook) : "",
-      input.showdocToken ? await encryptText(env, input.showdocToken) : null,
+      "",
       input.wechatWorkWebhook ? await encryptText(env, normalizeHttpUrl(input.wechatWorkWebhook)) : null,
+      input.wechatWorkEnabled ? 1 : 0,
+      input.wechatEnabled ? 1 : 0,
       input.smsEnabled ? 1 : 0,
       input.privacyCallEnabled ? 1 : 0,
       input.ownerPin ? await sha256Hex(`pin:${input.ownerPin}`) : null,
@@ -429,11 +454,28 @@ async function handleNotify({ request, env, params }) {
   const createdAt = nowIso();
   let status = "sent";
   let errorSummary = "";
+  let virtualNumber = "";
   try {
-    await dispatchNotify(vehicle, g, env, channel);
+    const out = (await dispatchNotify(vehicle, g, env, channel, input)) || {};
+    virtualNumber = out.virtualNumber || "";
   } catch (error) {
     status = "failed";
     errorSummary = String(error.message || error).slice(0, 300);
+  }
+
+  // 隐私拨号：写入拨号日志（记录拨号方与被叫方）
+  if (channel === "privacy_call") {
+    const callee = vehicle.owner_phone_encrypted ? await decryptText(env, vehicle.owner_phone_encrypted).catch(() => "") : "";
+    await recordCallLog(env, {
+      vehicle,
+      channel: "privacy_call",
+      callerNumber: input.callerNumber ? normalizePhone(input.callerNumber) : "",
+      calleeNumber: callee,
+      virtualNumber,
+      status: status === "sent" ? "success" : "failed",
+      errorSummary,
+      visitorIpHash: visitorHash,
+    }).catch(() => {});
   }
 
   await env.DB.prepare(
@@ -446,12 +488,11 @@ async function handleNotify({ request, env, params }) {
   return json({ message: "已通知车主，请耐心等待。", channel });
 }
 
-async function dispatchNotify(vehicle, g, env, channel) {
-  if (channel === "showdoc") {
-    const webhook = vehicle.showdoc_webhook || g.showdoc_webhook;
-    if (!webhook) throw new Error("ShowDoc 未配置");
-    const token = vehicle.showdoc_token_encrypted ? await decryptText(env, vehicle.showdoc_token_encrypted) : g.showdoc_token;
-    await sendShowDoc(webhook, token, vehicle);
+async function dispatchNotify(vehicle, g, env, channel, input = {}) {
+  if (channel === "wechat") {
+    const webhook = g.wechat_notify_webhook;
+    if (!webhook) throw new Error("微信通知未配置");
+    await sendWechat(webhook, vehicle);
   } else if (channel === "wechat_work") {
     const webhook = vehicle.wechat_work_webhook_encrypted ? await decryptText(env, vehicle.wechat_work_webhook_encrypted) : g.wechat_work_webhook;
     if (!webhook) throw new Error("企业微信未配置");
@@ -459,28 +500,11 @@ async function dispatchNotify(vehicle, g, env, channel) {
   } else if (channel === "sms") {
     await sendSms(vehicle, env, g);
   } else if (channel === "privacy_call") {
-    await startPrivacyCall(vehicle, env, g);
+    return { virtualNumber: await startPrivacyCall(vehicle, env, g, input) };
   } else {
     throw new Error("未知通知渠道");
   }
-}
-
-async function sendShowDoc(webhook, token, vehicle) {
-  const body = new URLSearchParams({
-    title: "扫码挪车提醒",
-    content: `车辆 ${vehicle.plate_number_masked} 收到挪车提醒，请及时处理。`,
-  });
-  if (token) body.set("token", token);
-  const res = await fetch(webhook, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded; charset=utf-8" },
-    body,
-  });
-  if (!res.ok) throw new Error(`ShowDoc 通知失败：${res.status}`);
-  const data = await res.json().catch(() => null);
-  if (data && typeof data.error_code !== "undefined" && Number(data.error_code) !== 0) {
-    throw new Error(`ShowDoc 通知失败：${data.error_message || data.error_code}`);
-  }
+  return {};
 }
 
 async function sendWechatWork(webhook, vehicle) {
@@ -492,6 +516,18 @@ async function sendWechatWork(webhook, vehicle) {
   if (!res.ok) throw new Error(`企业微信通知失败：${res.status}`);
   const data = await res.json().catch(() => ({}));
   if (data.errcode && data.errcode !== 0) throw new Error(`企业微信通知失败：${data.errmsg || data.errcode}`);
+}
+
+// 微信通知：与「企业微信机器人」同构，Webhook 由超管统一配置（可对接微信机器人 / 公众号推送中转）
+async function sendWechat(webhook, vehicle) {
+  const body = {
+    msgtype: "text",
+    text: { content: `扫码挪车提醒：车辆 ${vehicle.plate_number_masked} 收到挪车提醒，请及时处理。` },
+  };
+  const res = await fetch(webhook, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  if (!res.ok) throw new Error(`微信通知失败：${res.status}`);
+  const data = await res.json().catch(() => ({}));
+  if (data.errcode && data.errcode !== 0) throw new Error(`微信通知失败：${data.errmsg || data.errcode}`);
 }
 
 /* ---------- 短信：按服务商分发 ---------- */
@@ -573,17 +609,28 @@ async function sendTencentSms(vehicle, env, g) {
   if (status && status.Code !== "Ok") throw new Error(status.Message || status.Code);
 }
 
-/* ---------- 隐私号：按服务商分发 ---------- */
-async function startPrivacyCall(vehicle, env, g) {
+/* ---------- 隐私号：按服务商分发（返回平台分配的中间号，用于写拨号日志） ---------- */
+// 各平台返回中间号的字段名不同，统一尝试读取
+function pickVirtualNumber(data) {
+  if (!data || typeof data !== "object") return "";
+  const keys = ["virtualNumber", "virtual_number", "bindNumber", "bind_number", "middleNumber", "xNumber", "x_number", "numberX", "NumberX", "secretNo", "SecretNo", "number", "Number"];
+  for (const k of keys) {
+    const v = data[k];
+    if (typeof v === "string" && v.trim()) return v.trim();
+  }
+  return "";
+}
+
+async function startPrivacyCall(vehicle, env, g, input = {}) {
   const vendor = g.privacy_vendor || "custom";
   if (!privacyVendorReady(g)) throw new Error(`隐私号通道未配置（服务商：${vendor}，请到超级管理员后台补全参数）`);
-  if (vendor === "tencent") return startTencentPrivacyCall(vehicle, env, g);
-  if (vendor === "aliyun") return startAliyunPrivacyCall(vehicle, env, g);
-  return startCustomPrivacyCall(vehicle, env, g);
+  if (vendor === "tencent") return startTencentPrivacyCall(vehicle, env, g, input);
+  if (vendor === "aliyun") return startAliyunPrivacyCall(vehicle, env, g, input);
+  return startCustomPrivacyCall(vehicle, env, g, input);
 }
 
 // 自定义 Webhook：可对接任意平台（腾讯云/阿里云/第三方均可经云函数中转）
-async function startCustomPrivacyCall(vehicle, env, g) {
+async function startCustomPrivacyCall(vehicle, env, g, input = {}) {
   const phone = await decryptText(env, vehicle.owner_phone_encrypted);
   const res = await fetch(g.privacy_call_webhook_url, {
     method: "POST",
@@ -591,16 +638,25 @@ async function startCustomPrivacyCall(vehicle, env, g) {
       "Content-Type": "application/json",
       ...(g.privacy_call_webhook_token ? { Authorization: `Bearer ${g.privacy_call_webhook_token}` } : {}),
     },
-    body: JSON.stringify({ phone, maskedPlate: vehicle.plate_number_masked, vendor: "custom", purpose: "move_car_privacy_call" }),
+    body: JSON.stringify({
+      phone,
+      callerNumber: input.callerNumber || "",
+      maskedPlate: vehicle.plate_number_masked,
+      vendor: "custom",
+      purpose: "move_car_privacy_call",
+    }),
   });
   if (!res.ok) throw new Error(`隐私号呼叫失败：${res.status}`);
+  const data = await res.json().catch(() => null);
+  return pickVirtualNumber(data);
 }
 
 // 腾讯云号码保护（AXB 绑定）：沿用 TC3 签名，Action / 版本可在后台调整
-async function startTencentPrivacyCall(vehicle, env, g) {
+async function startTencentPrivacyCall(vehicle, env, g, input = {}) {
   const phone = await decryptText(env, vehicle.owner_phone_encrypted);
   const payload = {
     PhoneNumber: toE164(phone, g.default_phone_country_code || "+86"),
+    ...(input.callerNumber ? { CallerNumber: toE164(input.callerNumber, g.default_phone_country_code || "+86") } : {}),
     ...(g.privacy_tencent_pool_key ? { PoolKey: g.privacy_tencent_pool_key } : {}),
   };
   const result = await tencentApi(g, {
@@ -614,10 +670,11 @@ async function startTencentPrivacyCall(vehicle, env, g) {
     payload,
   });
   if (result?.Error) throw new Error(result.Error.Message || "腾讯云号码保护调用失败");
+  return pickVirtualNumber(result);
 }
 
 // 阿里云号码隐私保护：标准 RPC 签名，Action 可在后台调整
-async function startAliyunPrivacyCall(vehicle, env, g) {
+async function startAliyunPrivacyCall(vehicle, env, g, input = {}) {
   const phone = await decryptText(env, vehicle.owner_phone_encrypted);
   const result = await aliyunApi(
     {
@@ -629,10 +686,38 @@ async function startAliyunPrivacyCall(vehicle, env, g) {
       Action: g.privacy_aliyun_action || "BindAxb",
       Version: "2017-05-25",
       PhoneNoA: toE164(phone, g.default_phone_country_code || "+86").replace("+", ""),
+      ...(input.callerNumber ? { PhoneNoB: toE164(input.callerNumber, g.default_phone_country_code || "+86").replace("+", "") } : {}),
       ...(g.privacy_aliyun_pool_key ? { PoolKey: g.privacy_aliyun_pool_key } : {}),
     }
   );
   if (result?.Code && result.Code !== "OK") throw new Error(result.Message || result.Code);
+  return pickVirtualNumber(result);
+}
+
+/* ---------- 拨号日志 ---------- */
+async function recordCallLog(env, { vehicle, channel, callerNumber = "", calleeNumber = "", virtualNumber = "", status = "success", errorSummary = "", visitorIpHash = "" }) {
+  const enc = (v) => (v ? encryptText(env, v) : Promise.resolve(null));
+  const last4 = (v) => (v ? String(v).slice(-4) : null);
+  await env.DB.prepare(
+    `INSERT INTO call_logs (vehicle_id, channel, caller_number_enc, caller_last4, callee_number_enc, callee_last4,
+      virtual_number_enc, virtual_last4, status, error_summary, visitor_ip_hash, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  )
+    .bind(
+      vehicle.id,
+      channel,
+      await enc(callerNumber),
+      last4(callerNumber),
+      await enc(calleeNumber),
+      last4(calleeNumber),
+      await enc(virtualNumber),
+      last4(virtualNumber),
+      status,
+      String(errorSummary || "").slice(0, 300),
+      visitorIpHash || "",
+      nowIso()
+    )
+    .run();
 }
 
 // 阿里云开放 API 通用签名（RPC 风格，AccessKeyId + HMAC-SHA1）
@@ -721,12 +806,8 @@ async function handleOwnerVehicle({ env, params }) {
     .bind(vehicle.id)
     .all();
   // 回填当前配置（车主本人可见自己的配置），修复「改了不生效 / 打开时开关被重置」的问题
-  let wechatWorkWebhook = "";
   let ownerPhoneMasked = "";
   let plateNumber = "";
-  try {
-    if (vehicle.wechat_work_webhook_encrypted) wechatWorkWebhook = await decryptText(env, vehicle.wechat_work_webhook_encrypted);
-  } catch {}
   try {
     if (vehicle.owner_phone_encrypted) ownerPhoneMasked = maskPhone(await decryptText(env, vehicle.owner_phone_encrypted));
   } catch {}
@@ -737,15 +818,11 @@ async function handleOwnerVehicle({ env, params }) {
     vehicleToken: vehicle.vehicle_token,
     maskedPlate: vehicle.plate_number_masked,
     plateNumber: plateNumber || vehicle.plate_number_masked,
-    showdocEnabled: Boolean(vehicle.showdoc_webhook),
-    wechatWorkEnabled: Boolean(vehicle.wechat_work_webhook_encrypted),
+    wechatWorkEnabled: Boolean(vehicle.wechat_work_enabled),
+    wechatEnabled: Boolean(vehicle.wechat_enabled),
     smsEnabled: Boolean(vehicle.sms_enabled),
     privacyCallEnabled: Boolean(vehicle.privacy_call_enabled),
     hasPin: Boolean(vehicle.owner_pin_hash),
-    // 回填用
-    wechatWorkWebhook,
-    showdocWebhook: vehicle.showdoc_webhook || "",
-    hasShowdocToken: Boolean(vehicle.showdoc_token_encrypted),
     ownerPhoneMasked,
     hasPhone: Boolean(vehicle.owner_phone_encrypted),
     // 平台已开通的通道：车主后台只展示这些，未开通的不出现
@@ -759,8 +836,8 @@ async function handleOwnerVehicle({ env, params }) {
     global: {
       sms: channelOpened(g, "sms"),
       wechat: channelOpened(g, "wechat_work"),
+      wechatNotify: channelOpened(g, "wechat"),
       privacy: channelOpened(g, "privacy_call"),
-      showdoc: channelOpened(g, "showdoc"),
       directCall: channelOpened(g, "direct_call"),
     },
     recentNotifications: logs.results || [],
@@ -777,21 +854,27 @@ async function handlePatchOwnerVehicle({ request, env, params }) {
   const updates = [];
   const values = [];
   // 显式传 null / 空字符串表示清除；传值表示设置。支持把 webhook 清空。
-  if ("showdocWebhook" in input) {
-    if (input.showdocWebhook) { updates.push("showdoc_webhook = ?"); values.push(normalizeHttpUrl(input.showdocWebhook)); }
-    else { updates.push("showdoc_webhook = ?"); values.push(""); }
+  if ("wechatWorkEnabled" in input && typeof input.wechatWorkEnabled === "boolean") {
+    updates.push("wechat_work_enabled = ?"); values.push(input.wechatWorkEnabled ? 1 : 0);
   }
-  if ("showdocToken" in input) {
-    if (input.showdocToken) { updates.push("showdoc_token_encrypted = ?"); values.push(await encryptText(env, input.showdocToken)); }
-    else { updates.push("showdoc_token_encrypted = ?"); values.push(null); }
+  if ("wechatEnabled" in input && typeof input.wechatEnabled === "boolean") {
+    updates.push("wechat_enabled = ?"); values.push(input.wechatEnabled ? 1 : 0);
   }
   if ("wechatWorkWebhook" in input) {
     if (input.wechatWorkWebhook) { updates.push("wechat_work_webhook_encrypted = ?"); values.push(await encryptText(env, normalizeHttpUrl(input.wechatWorkWebhook))); }
     else { updates.push("wechat_work_webhook_encrypted = ?"); values.push(null); }
   }
   if ("ownerPhone" in input) {
-    if (input.ownerPhone) { updates.push("owner_phone_encrypted = ?"); values.push(await encryptText(env, normalizePhone(input.ownerPhone))); }
-    else { updates.push("owner_phone_encrypted = ?"); values.push(null); }
+    const next = normalizePhone(input.ownerPhone);
+    const current = vehicle.owner_phone_encrypted ? await decryptText(env, vehicle.owner_phone_encrypted).catch(() => "") : "";
+    const changed = next !== current;
+    // 更换手机号必须通过验证：短信验证码 或 管理密码
+    if (changed && current) {
+      const verified = await verifyPhoneChange({ env, g: await loadGlobal(env), vehicle, input });
+      if (!verified.ok) return json({ error: verified.error, message: verified.message }, verified.status || 400);
+    }
+    if (next) { updates.push("owner_phone_encrypted = ?"); values.push(await encryptText(env, next)); }
+    else if (!changed) { updates.push("owner_phone_encrypted = ?"); values.push(null); }
   }
   if (typeof input.smsEnabled === "boolean") { updates.push("sms_enabled = ?"); values.push(input.smsEnabled ? 1 : 0); }
   if (typeof input.privacyCallEnabled === "boolean") { updates.push("privacy_call_enabled = ?"); values.push(input.privacyCallEnabled ? 1 : 0); }
@@ -801,6 +884,160 @@ async function handlePatchOwnerVehicle({ request, env, params }) {
   values.push(nowIso(), vehicle.id);
   await env.DB.prepare(`UPDATE vehicles SET ${updates.join(", ")} WHERE id = ?`).bind(...values).run();
   return json({ message: "配置已更新。" });
+}
+
+/* ============================================================
+   车主：更换手机号需验证（短信验证码 或 管理密码）
+   ============================================================ */
+async function verifyPhoneChange({ env, g, vehicle, input }) {
+  const v = input.phoneVerify || {};
+  if (v.method === "pin") {
+    if (!vehicle.owner_pin_hash) {
+      return { ok: false, error: "pin_unavailable", message: "未设置管理密码，请改用短信验证码。", status: 400 };
+    }
+    if (!isPin(v.pin)) return { ok: false, error: "invalid_pin", message: "请输入正确的管理密码。", status: 400 };
+    if ((await sha256Hex(`pin:${v.pin}`)) !== vehicle.owner_pin_hash) {
+      return { ok: false, error: "pin_mismatch", message: "管理密码不正确。", status: 403 };
+    }
+    return { ok: true, method: "pin" };
+  }
+  if (v.method === "sms") {
+    if (!isOn(g.sms_enabled_global) || !smsVendorReady(g)) {
+      return { ok: false, error: "sms_unavailable", message: "平台未开通短信通道，请改用管理密码验证。", status: 400 };
+    }
+    if (!/^\d{6}$/.test(String(v.code || ""))) {
+      return { ok: false, error: "invalid_code", message: "请输入 6 位短信验证码。", status: 400 };
+    }
+    const now = nowIso();
+    const row = await env.DB.prepare(
+      `SELECT id, attempts FROM phone_verify_codes
+       WHERE vehicle_id = ? AND code_hash = ? AND consumed_at IS NULL AND expires_at > ?
+       ORDER BY id DESC LIMIT 1`
+    )
+      .bind(vehicle.id, await sha256Hex(`code:${v.code}`), now)
+      .first();
+    if (!row) return { ok: false, error: "code_invalid", message: "验证码无效或已过期。", status: 403 };
+    if (Number(row.attempts) >= 5) return { ok: false, error: "code_locked", message: "验证码尝试次数过多，请重新获取。", status: 429 };
+    await env.DB.prepare("UPDATE phone_verify_codes SET consumed_at = ? WHERE id = ?").bind(now, row.id).run();
+    return { ok: true, method: "sms" };
+  }
+  return {
+    ok: false,
+    error: "verification_required",
+    message: "更换手机号需要验证：请提交短信验证码（phoneVerify.method=sms）或管理密码（phoneVerify.method=pin）。",
+    status: 403,
+  };
+}
+
+// 下发换号验证码到「当前手机号」
+async function handleOwnerPhoneSendCode({ request, env, params }) {
+  assertConfig(env, ["DB", "DATA_ENCRYPTION_KEY"]);
+  const g = await loadGlobal(env);
+  const vehicle = await getVehicleByOwnerToken(env, params.ownerToken);
+  if (!vehicle) return json({ error: "not_found", message: "管理链接无效。" }, 404);
+  if (!vehicle.owner_phone_encrypted) {
+    return json({ error: "no_phone", message: "当前未登记手机号，无需验证可直接设置。" }, 400);
+  }
+  if (!isOn(g.sms_enabled_global) || !smsVendorReady(g)) {
+    return json({ error: "sms_unavailable", message: "平台未开通短信通道，请使用管理密码验证。" }, 400);
+  }
+  // 60 秒内只发一次
+  const recent = await env.DB.prepare(
+    "SELECT id FROM phone_verify_codes WHERE vehicle_id = ? AND created_at > ? ORDER BY id DESC LIMIT 1"
+  )
+    .bind(vehicle.id, new Date(Date.now() - 60_000).toISOString())
+    .first();
+  if (recent) return json({ error: "too_soon", message: "验证码已发送，请稍候再试（60 秒）。" }, 429);
+
+  const code = String(Math.floor(100000 + Math.random() * 900000));
+  const now = nowIso();
+  const expires = new Date(Date.now() + 10 * 60_000).toISOString();
+  await env.DB.prepare(
+    `INSERT INTO phone_verify_codes (vehicle_id, code_hash, expires_at, attempts, created_at) VALUES (?, ?, ?, 0, ?)`
+  )
+    .bind(vehicle.id, await sha256Hex(`code:${code}`), expires, now)
+    .run();
+
+  const phone = await decryptText(env, vehicle.owner_phone_encrypted);
+  try {
+    await sendRawSms(env, g, phone, `【扫码挪车】您正在更换绑定手机号，验证码 ${code}（10 分钟内有效）。`);
+  } catch (error) {
+    return json({ error: "sms_failed", message: `验证码短信发送失败：${error.message}` }, 502);
+  }
+  return json({ message: `验证码已发送至当前手机号（${maskPhone(phone)}）。`, expiresIn: 600 });
+}
+
+// 直接发送一条自定义内容的短信（换号验证用，不写入通知日志）
+async function sendRawSms(env, g, phone, text) {
+  const vendor = g.sms_vendor || "tencent";
+  if (!smsVendorReady(g)) throw new Error("短信通道未配置");
+  const target = toE164(phone, g.default_phone_country_code || "+86");
+  if (vendor === "aliyun") {
+    const result = await aliyunApi(
+      { accessKeyId: g.aliyun_access_key_id, accessKeySecret: g.aliyun_access_key_secret, regionId: g.aliyun_sms_region || "cn-hangzhou" },
+      {
+        Action: "SendSms",
+        Version: "2017-05-25",
+        PhoneNumbers: target.replace("+", ""),
+        SignName: g.aliyun_sms_sign_name,
+        TemplateCode: g.aliyun_sms_template_code,
+        TemplateParam: JSON.stringify({ code: (text.match(/\d{6}/) || [""])[0] }),
+      }
+    );
+    if (result.Code && result.Code !== "OK") throw new Error(result.Message || result.Code);
+    return;
+  }
+  if (vendor === "custom") {
+    const res = await fetch(g.sms_custom_webhook, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...(g.sms_custom_token ? { Authorization: `Bearer ${g.sms_custom_token}` } : {}) },
+      body: JSON.stringify({ phone, text, purpose: "phone_change_verify", vendor: "custom" }),
+    });
+    if (!res.ok) throw new Error(`自定义短信 Webhook 失败：${res.status}`);
+    return;
+  }
+  // 腾讯云：验证码类短信复用模板，验证码作为模板参数
+  const result = await tencentApi(g, {
+    secretId: g.tencent_secret_id,
+    secretKey: g.tencent_secret_key,
+    service: "sms",
+    host: "sms.tencentcloudapi.com",
+    version: "2021-01-11",
+    action: "SendSms",
+    region: g.tencent_sms_region || "ap-guangzhou",
+    payload: {
+      SmsSdkAppId: g.tencent_sms_app_id,
+      SignName: g.tencent_sms_sign_name,
+      TemplateId: g.tencent_sms_template_id,
+      TemplateParamSet: [(text.match(/\d{6}/) || [""])[0]],
+      PhoneNumberSet: [target],
+    },
+  });
+  const status = result.SendStatusSet?.[0];
+  if (status && status.Code !== "Ok") throw new Error(status.Message || status.Code);
+}
+
+/* ============================================================
+   访客：直拨上报（拨号日志）
+   —— 直拨由客户端 tel: 发起，服务端无法感知，因此需要访客页主动上报
+   ============================================================ */
+async function handleVisitorCallLog({ request, env, params }) {
+  assertConfig(env, ["DB", "DATA_ENCRYPTION_KEY"]);
+  const vehicle = await getVehicleByToken(env, params.vehicleToken);
+  if (!vehicle) return json({ error: "not_found", message: "车辆不存在。" }, 404);
+  if (!vehicle.owner_phone_encrypted) return json({ error: "no_phone", message: "车主未登记手机号。" }, 400);
+  const input = await readJson(request);
+  const callee = await decryptText(env, vehicle.owner_phone_encrypted).catch(() => "");
+  const visitorHash = await visitorIpHash(request, env);
+  await recordCallLog(env, {
+    vehicle,
+    channel: "direct_call",
+    callerNumber: input.callerNumber ? normalizePhone(input.callerNumber) : "",
+    calleeNumber: callee,
+    status: "success",
+    visitorIpHash: visitorHash,
+  });
+  return json({ message: "已记录直拨日志。" });
 }
 
 async function handleRegenerateVehicleToken({ env, params }) {
@@ -979,6 +1216,117 @@ async function handleAdminConfigPut({ request, env }) {
 }
 
 /* ============================================================
+   超级管理员：拨号日志（筛选 / 导出 / 批量删除）
+   ============================================================ */
+const CALL_LOG_LIMIT = 200;
+
+async function buildCallLogQuery(url) {
+  const q = (url.searchParams.get("q") || "").trim();          // 车牌（完整或片段）
+  const channel = (url.searchParams.get("channel") || "").trim();
+  const status = (url.searchParams.get("status") || "").trim();
+  const from = (url.searchParams.get("from") || "").trim();     // YYYY-MM-DD
+  const to = (url.searchParams.get("to") || "").trim();
+  const last4 = (url.searchParams.get("last4") || "").trim();   // 号码后 4 位
+  const vehicleId = (url.searchParams.get("vehicleId") || "").trim();
+
+  const where = [];
+  const binds = [];
+  if (channel) { where.push("c.channel = ?"); binds.push(channel); }
+  if (status) { where.push("c.status = ?"); binds.push(status); }
+  if (vehicleId) { where.push("c.vehicle_id = ?"); binds.push(Number(vehicleId)); }
+  if (from) { where.push("c.created_at >= ?"); binds.push(from.includes("T") ? from : `${from}T00:00:00.000Z`); }
+  if (to) { where.push("c.created_at <= ?"); binds.push(to.includes("T") ? to : `${to}T23:59:59.999Z`); }
+  if (q) {
+    // 脱敏串只保留首尾，完整车牌需按哈希精确匹配；同时保留片段模糊匹配
+    if (isPlate(q)) {
+      where.push("(v.plate_number_masked LIKE ? OR v.plate_number_hash = ?)");
+      binds.push(`%${q}%`, await sha256Hex(normalizePlate(q)));
+    } else {
+      where.push("(v.plate_number_masked LIKE ? OR v.plate_number_masked LIKE ?)");
+      binds.push(`%${q}%`, `%${q.toUpperCase()}%`);
+    }
+  }
+  if (last4) {
+    where.push("(c.caller_last4 = ? OR c.callee_last4 = ? OR c.virtual_last4 = ?)");
+    binds.push(last4, last4, last4);
+  }
+  const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
+  return { whereSql, binds };
+}
+
+async function queryCallLogs(env, url, { limit = CALL_LOG_LIMIT, offset = 0 } = {}) {
+  const { whereSql, binds } = await buildCallLogQuery(url);
+  const rows = await env.DB.prepare(
+    `SELECT c.*, v.plate_number_masked, v.plate_number_encrypted
+     FROM call_logs c LEFT JOIN vehicles v ON v.id = c.vehicle_id
+     ${whereSql} ORDER BY c.id DESC LIMIT ? OFFSET ?`
+  )
+    .bind(...binds, limit, offset)
+    .all();
+  const count = await env.DB.prepare(
+    `SELECT COUNT(*) AS n FROM call_logs c LEFT JOIN vehicles v ON v.id = c.vehicle_id ${whereSql}`
+  )
+    .bind(...binds)
+    .first();
+  return { rows: rows.results || [], total: Number(count?.n || 0) };
+}
+
+async function callLogToView(env, row) {
+  const dec = async (v) => (v ? await decryptText(env, v).catch(() => "") : "");
+  let plate = row.plate_number_masked || "";
+  if (row.plate_number_encrypted) plate = (await dec(row.plate_number_encrypted)) || plate;
+  return {
+    id: row.id,
+    vehicleId: row.vehicle_id,
+    plateNumber: plate,
+    maskedPlate: row.plate_number_masked || "",
+    channel: row.channel,
+    callerNumber: await dec(row.caller_number_enc),
+    callerLast4: row.caller_last4 || "",
+    calleeNumber: await dec(row.callee_number_enc),
+    calleeLast4: row.callee_last4 || "",
+    virtualNumber: await dec(row.virtual_number_enc),
+    virtualLast4: row.virtual_last4 || "",
+    status: row.status,
+    errorSummary: row.error_summary || "",
+    createdAt: row.created_at,
+  };
+}
+
+async function handleAdminCallLogsList({ env, url }) {
+  const limit = Math.min(Number(url.searchParams.get("limit")) || 50, CALL_LOG_LIMIT);
+  const offset = Number(url.searchParams.get("offset")) || 0;
+  const { rows, total } = await queryCallLogs(env, url, { limit, offset });
+  const logs = [];
+  for (const r of rows) logs.push(await callLogToView(env, r));
+  return json({ logs, total, limit, offset });
+}
+
+async function handleAdminCallLogsExport({ env, url }) {
+  const { rows } = await queryCallLogs(env, url, { limit: 5000, offset: 0 });
+  const logs = [];
+  for (const r of rows) logs.push(await callLogToView(env, r));
+  return json({ logs, exportedAt: nowIso() });
+}
+
+async function handleAdminCallLogsBulkDelete({ request, env, url }) {
+  const input = await readJson(request);
+  const ids = Array.isArray(input.ids) ? input.ids.map(Number).filter((n) => Number.isInteger(n) && n > 0) : [];
+  // 支持「按筛选条件清空」：传 { all: true } 且带筛选参数
+  if (!ids.length && input.all === true) {
+    const { whereSql, binds } = await buildCallLogQuery(url);
+    if (!whereSql) return json({ error: "no_filter", message: "未提供筛选条件，拒绝清空全部日志。" }, 400);
+    const res = await env.DB.prepare(`DELETE FROM call_logs WHERE id IN (SELECT c.id FROM call_logs c LEFT JOIN vehicles v ON v.id = c.vehicle_id ${whereSql})`).bind(...binds).run();
+    return json({ message: `已按筛选条件删除 ${res.meta?.changes ?? 0} 条日志。`, deleted: res.meta?.changes ?? 0 });
+  }
+  if (!ids.length) return json({ error: "no_ids", message: "请选择要删除的日志。" }, 400);
+  if (ids.length > 2000) return json({ error: "too_many", message: "单次最多删除 2000 条。" }, 400);
+  const ph = ids.map(() => "?").join(",");
+  const res = await env.DB.prepare(`DELETE FROM call_logs WHERE id IN (${ph})`).bind(...ids).run();
+  return json({ message: `已删除 ${res.meta?.changes ?? 0} 条日志。`, deleted: res.meta?.changes ?? 0 });
+}
+
+/* ============================================================
    超级管理员：按车牌查车主手机号
    ============================================================ */
 async function handleAdminLookup({ env, url }) {
@@ -1119,8 +1467,8 @@ async function adminVehicleView(env, v) {
     plateMissing: !v.plate_number_encrypted,
     ownerPhone,
     wechatWorkWebhook,
-    showdocWebhook: v.showdoc_webhook || "",
-    hasShowdocToken: Boolean(v.showdoc_token_encrypted),
+    wechatWorkEnabled: Boolean(v.wechat_work_enabled),
+    wechatEnabled: Boolean(v.wechat_enabled),
     smsEnabled: Boolean(v.sms_enabled),
     privacyCallEnabled: Boolean(v.privacy_call_enabled),
     hasPin: Boolean(v.owner_pin_hash),
@@ -1162,12 +1510,13 @@ async function handleAdminVehicleCreate({ request, env }) {
   const input = await readJson(request);
   const plate = normalizePlate(input.plateNumber);
   if (!isPlate(plate)) return json({ error: "invalid_plate", message: "请填写有效车牌号。" }, 400);
-  if (input.ownerPhone && !isPhone(input.ownerPhone)) return json({ error: "invalid_phone", message: "手机号格式不正确。" }, 400);
-  if (input.ownerPin && !isPin(input.ownerPin)) return json({ error: "invalid_pin", message: "管理密码需为 4-12 位数字。" }, 400);
-  if (input.wechatWorkWebhook && !isHttpUrl(input.wechatWorkWebhook)) return json({ error: "invalid_wechat_work_webhook", message: "企业微信 Webhook 必须是 http 或 https 地址。" }, 400);
-  if (input.showdocWebhook && !isHttpUrl(input.showdocWebhook)) return json({ error: "invalid_showdoc_webhook", message: "ShowDoc Webhook 必须是 http 或 https 地址。" }, 400);
+  // 一个车牌只能绑定一次：重复先拦截（避免被后面的必填校验抢先拦截）
   const dup = await env.DB.prepare("SELECT id FROM vehicles WHERE plate_number_hash = ?").bind(await sha256Hex(plate)).first();
   if (dup) return json({ error: "duplicate_plate", message: `车牌 ${plate} 已存在绑定（#${dup.id}），请直接编辑该记录。` }, 409);
+  // 手机号必填：直接绑定到车牌
+  if (!isPhone(input.ownerPhone)) return json({ error: "invalid_phone", message: "手机号必填，且需为有效号码。" }, 400);
+  if (input.ownerPin && !isPin(input.ownerPin)) return json({ error: "invalid_pin", message: "管理密码需为 4-12 位数字。" }, 400);
+  if (input.wechatWorkWebhook && !isHttpUrl(input.wechatWorkWebhook)) return json({ error: "invalid_wechat_work_webhook", message: "企业微信 Webhook 必须是 http 或 https 地址。" }, 400);
   const created = await insertVehicleRecord(env, { ...input, plateNumber: plate });
   return json({ message: `已新增 ${plate} 的挪车码绑定。`, ...created }, 201);
 }
@@ -1196,21 +1545,13 @@ async function handleAdminVehicleUpdate({ request, env, params }) {
       updates.push("owner_phone_encrypted = ?"); values.push(await encryptText(env, normalizePhone(input.ownerPhone)));
     } else { updates.push("owner_phone_encrypted = ?"); values.push(null); }
   }
+  if ("wechatWorkEnabled" in input && typeof input.wechatWorkEnabled === "boolean") { updates.push("wechat_work_enabled = ?"); values.push(input.wechatWorkEnabled ? 1 : 0); }
+  if ("wechatEnabled" in input && typeof input.wechatEnabled === "boolean") { updates.push("wechat_enabled = ?"); values.push(input.wechatEnabled ? 1 : 0); }
   if ("wechatWorkWebhook" in input) {
     if (input.wechatWorkWebhook) {
       if (!isHttpUrl(input.wechatWorkWebhook)) return json({ error: "invalid_wechat_work_webhook", message: "企业微信 Webhook 必须是 http 或 https 地址。" }, 400);
       updates.push("wechat_work_webhook_encrypted = ?"); values.push(await encryptText(env, normalizeHttpUrl(input.wechatWorkWebhook)));
     } else { updates.push("wechat_work_webhook_encrypted = ?"); values.push(null); }
-  }
-  if ("showdocWebhook" in input) {
-    if (input.showdocWebhook) {
-      if (!isHttpUrl(input.showdocWebhook)) return json({ error: "invalid_showdoc_webhook", message: "ShowDoc Webhook 必须是 http 或 https 地址。" }, 400);
-      updates.push("showdoc_webhook = ?"); values.push(normalizeHttpUrl(input.showdocWebhook));
-    } else { updates.push("showdoc_webhook = ?"); values.push(""); }
-  }
-  if ("showdocToken" in input) {
-    if (input.showdocToken) { updates.push("showdoc_token_encrypted = ?"); values.push(await encryptText(env, input.showdocToken)); }
-    else { updates.push("showdoc_token_encrypted = ?"); values.push(null); }
   }
   if (typeof input.smsEnabled === "boolean") { updates.push("sms_enabled = ?"); values.push(input.smsEnabled ? 1 : 0); }
   if (typeof input.privacyCallEnabled === "boolean") { updates.push("privacy_call_enabled = ?"); values.push(input.privacyCallEnabled ? 1 : 0); }
@@ -1262,7 +1603,6 @@ async function handleAdminVehicleImport({ request, env }) {
     if (item.ownerPhone && !isPhone(item.ownerPhone)) { failed.push({ plateNumber: plate, reason: "手机号格式不正确" }); continue; }
     if (item.ownerPin && !isPin(item.ownerPin)) { failed.push({ plateNumber: plate, reason: "管理密码需 4-12 位数字" }); continue; }
     if (item.wechatWorkWebhook && !isHttpUrl(item.wechatWorkWebhook)) { failed.push({ plateNumber: plate, reason: "企业微信 Webhook 非法" }); continue; }
-    if (item.showdocWebhook && !isHttpUrl(item.showdocWebhook)) { failed.push({ plateNumber: plate, reason: "ShowDoc Webhook 非法" }); continue; }
     try {
       await insertVehicleRecord(env, { ...item, plateNumber: plate });
       created.push(plate);
@@ -1353,7 +1693,7 @@ function privacyVendorReady(g) {
 // 管理员是否在后台「开通」了某通道（开关 + 服务商参数齐全）
 function channelOpened(g, ch) {
   if (ch === "wechat_work") return isOn(g.wechat_enabled_global);
-  if (ch === "showdoc") return isOn(g.showdoc_enabled_global);
+  if (ch === "wechat") return isOn(g.wechat_notify_enabled_global);
   if (ch === "sms") return isOn(g.sms_enabled_global) && smsVendorReady(g);
   if (ch === "privacy_call") return isOn(g.privacy_enabled_global) && privacyVendorReady(g);
   if (ch === "direct_call") return isOn(g.direct_call_enabled_global);
@@ -1362,13 +1702,13 @@ function channelOpened(g, ch) {
 
 // 平台已开通的通道（供车主后台 / 创建页筛选可选项）
 function platformChannels(g) {
-  return ["wechat_work", "showdoc", "sms", "privacy_call"].filter((c) => channelOpened(g, c));
+  return ["wechat_work", "wechat", "sms", "privacy_call"].filter((c) => channelOpened(g, c));
 }
 
 function availableChannels(vehicle, g) {
   const channels = [];
-  if (channelOpened(g, "wechat_work") && (vehicle.wechat_work_webhook_encrypted || g.wechat_work_webhook)) channels.push("wechat_work");
-  if (channelOpened(g, "showdoc") && (vehicle.showdoc_webhook || g.showdoc_webhook)) channels.push("showdoc");
+  if (channelOpened(g, "wechat_work") && (vehicle.wechat_work_enabled || vehicle.wechat_work_webhook_encrypted || g.wechat_work_webhook)) channels.push("wechat_work");
+  if (channelOpened(g, "wechat") && vehicle.wechat_enabled && g.wechat_notify_webhook) channels.push("wechat");
   if (channelOpened(g, "sms") && vehicle.sms_enabled && vehicle.owner_phone_encrypted) channels.push("sms");
   if (channelOpened(g, "privacy_call") && vehicle.privacy_call_enabled && vehicle.owner_phone_encrypted) channels.push("privacy_call");
   return channels;
@@ -1376,7 +1716,7 @@ function availableChannels(vehicle, g) {
 
 function defaultNotifyChannel(vehicle, g) {
   const channels = availableChannels(vehicle, g);
-  return ["wechat_work", "showdoc", "sms", "privacy_call"].find((c) => channels.includes(c)) || "";
+  return ["wechat_work", "wechat", "sms", "privacy_call"].find((c) => channels.includes(c)) || "";
 }
 
 /* ============================================================
@@ -1429,23 +1769,25 @@ function normalizePlate(value) { return String(value || "").trim().replace(/\s+/
 function normalizeHttpUrl(value) { return new URL(String(value || "").trim()).toString(); }
 function normalizePhone(value) { return String(value || "").trim().replace(/[\s-]/g, ""); }
 
-function validateVehicleInput(input, { requireNotification = false, partial = false, hasStoredPhone = false } = {}) {
+function validateVehicleInput(input, { requireNotification = false, requirePhone = false, partial = false, hasStoredPhone = false } = {}) {
   if (partial) {
     const requiresPhone = Boolean(input.smsEnabled || input.privacyCallEnabled);
     if ((requiresPhone && !hasStoredPhone) || (input.ownerPhone && String(input.ownerPhone).length)) {
       if (!isPhone(input.ownerPhone)) return { error: "invalid_phone", message: "请填写有效手机号，或关闭短信/隐私号通知。" };
     }
-    if (input.showdocWebhook) { if (!isHttpUrl(input.showdocWebhook)) return { error: "invalid_showdoc_webhook", message: "ShowDoc Webhook 必须是 http 或 https 地址。" }; }
     if (input.wechatWorkWebhook && !isHttpUrl(input.wechatWorkWebhook)) return { error: "invalid_wechat_work_webhook", message: "企业微信机器人 Webhook 必须是 http 或 https 地址。" };
     return null;
   }
   const plate = normalizePlate(input.plateNumber);
   if (!isPlate(plate)) return { error: "invalid_plate", message: "请填写有效车牌号。" };
   if (input.ownerPin && !isPin(input.ownerPin)) return { error: "invalid_pin", message: "管理密码需为 4-12 位数字。" };
-  if (requireNotification && !input.showdocWebhook && !input.wechatWorkWebhook && !input.smsEnabled && !input.privacyCallEnabled) {
-    return { error: "missing_notification_channel", message: "请至少配置 ShowDoc、微信、短信或隐私号中的一种通知方式。" };
+  // 手机号在录入车牌时为必填（直接绑定到车牌）
+  if (requirePhone && !isPhone(input.ownerPhone)) {
+    return { error: "invalid_phone", message: "请填写有效手机号（录入车牌时必填，用于短信 / 隐私号通知与换号验证）。" };
   }
-  if (input.showdocWebhook && !isHttpUrl(input.showdocWebhook)) return { error: "invalid_showdoc_webhook", message: "ShowDoc Webhook 必须是 http 或 https 地址。" };
+  if (requireNotification && !input.wechatWorkEnabled && !input.wechatEnabled && !input.wechatWorkWebhook && !input.smsEnabled && !input.privacyCallEnabled) {
+    return { error: "missing_notification_channel", message: "请至少开启一种通知方式（企业微信 / 微信 / 短信 / 隐私号）。" };
+  }
   if (input.wechatWorkWebhook && !isHttpUrl(input.wechatWorkWebhook)) return { error: "invalid_wechat_work_webhook", message: "企业微信机器人 Webhook 必须是 http 或 https 地址。" };
   const requiresPhone = Boolean(input.smsEnabled || input.privacyCallEnabled);
   if ((requiresPhone && !hasStoredPhone) || input.ownerPhone) {

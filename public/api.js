@@ -94,10 +94,10 @@ export const api = {
   getPublicVehicle: (token) =>
     request(`/api/vehicles/${encodeURIComponent(token)}/public`),
 
-  notify: (token, channel) =>
+  notify: (token, channel, callerNumber) =>
     request(`/api/vehicles/${encodeURIComponent(token)}/notify`, {
       method: "POST",
-      body: channel ? { channel } : {},
+      body: { ...(channel ? { channel } : {}), ...(callerNumber ? { callerNumber } : {}) },
     }),
 
   getOwnerVehicle: (ownerToken) =>
@@ -107,6 +107,17 @@ export const api = {
     request(`/api/owner/${encodeURIComponent(ownerToken)}/vehicle`, {
       method: "PATCH",
       body: patch,
+    }),
+
+  // 更换手机号：向当前手机号下发短信验证码
+  sendPhoneVerifyCode: (ownerToken) =>
+    request(`/api/owner/${encodeURIComponent(ownerToken)}/phone/send-code`, { method: "POST" }),
+
+  // 访客：直拨上报（写拨号日志）
+  reportDirectCall: (vehicleToken, callerNumber) =>
+    request(`/api/vehicles/${encodeURIComponent(vehicleToken)}/call-log`, {
+      method: "POST",
+      body: callerNumber ? { callerNumber } : {},
     }),
 
   regenerateToken: (ownerToken) =>
@@ -232,6 +243,26 @@ export const api = {
     request(`/api/admin/vehicles/${encodeURIComponent(id)}/owner-token`, {
       headers: { "X-Admin-Token": token },
     }),
+
+  // 拨号日志：筛选查询 / 导出 / 批量删除
+  adminListCallLogs: (token, params = {}) => {
+    const qs = new URLSearchParams(params).toString();
+    return request(`/api/admin/call-logs${qs ? `?${qs}` : ""}`, { headers: { "X-Admin-Token": token } });
+  },
+
+  adminExportCallLogs: (token, params = {}) => {
+    const qs = new URLSearchParams(params).toString();
+    return request(`/api/admin/call-logs/export${qs ? `?${qs}` : ""}`, { headers: { "X-Admin-Token": token } });
+  },
+
+  adminBulkDeleteCallLogs: (token, params = {}, body) => {
+    const qs = new URLSearchParams(params).toString();
+    return request(`/api/admin/call-logs/bulk-delete${qs ? `?${qs}` : ""}`, {
+      method: "POST",
+      headers: { "X-Admin-Token": token },
+      body,
+    });
+  },
 
   // 管理员修改自己的登录密码
   adminChangePassword: (token, currentPassword, newPassword) =>

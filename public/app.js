@@ -90,8 +90,9 @@ function downloadFile(filename, text) {
   setTimeout(() => URL.revokeObjectURL(url), 2000);
 }
 
-// 简单模态
-function openModal({ title, body, confirmText, danger, onConfirm, onOpen }) {
+// 简单模态（onOpen 在内容渲染后调用；onCancel 在未确认就关闭时调用）
+let modalCancelHandler = null;
+function openModal({ title, body, confirmText, danger, onConfirm, onOpen, onCancel }) {
   let mask = $("#modalMask");
   if (!mask) {
     mask = document.createElement("div");
@@ -114,11 +115,21 @@ function openModal({ title, body, confirmText, danger, onConfirm, onOpen }) {
   const ok = $("#modalOk", mask);
   ok.textContent = confirmText || "确定";
   ok.className = `btn ${danger ? "btn-danger" : "btn-primary"}`;
-  ok.onclick = () => { closeModal(); onConfirm && onConfirm(); };
+  modalCancelHandler = typeof onCancel === "function" ? onCancel : null;
+  ok.onclick = () => {
+    modalCancelHandler = null; // 已确认，不再触发取消
+    closeModal();
+    onConfirm && onConfirm();
+  };
   mask.classList.add("show");
   if (typeof onOpen === "function") { try { onOpen(); } catch (e) { console.error(e); } }
 }
-function closeModal() { $("#modalMask")?.classList.remove("show"); }
+function closeModal() {
+  $("#modalMask")?.classList.remove("show");
+  const cb = modalCancelHandler;
+  modalCancelHandler = null;
+  if (cb) { try { cb(); } catch {} }
+}
 
 /* ---------------- 配置提示条 ---------------- */
 function ensureConfigBanner() {
@@ -146,7 +157,7 @@ function ensureConfigBanner() {
 /* ---------------- 渠道文案 ---------------- */
 const CHANNEL_LABELS = {
   wechat_work: "企业微信",
-  showdoc: "ShowDoc",
+  wechat: "微信通知",
   sms: "短信",
   privacy_call: "隐私号呼叫",
 };
@@ -160,7 +171,7 @@ function ownerOpenedChannels(vehicle) {
   const list = vehicle?.platformChannels;
   if (Array.isArray(list)) return list;
   // 后端未返回（旧版本）时回退为全部，避免误伤
-  return ["wechat_work", "showdoc", "sms", "privacy_call"];
+  return ["wechat_work", "wechat", "sms", "privacy_call"];
 }
 
 function ownerChannelFields(vehicle) {
@@ -169,37 +180,28 @@ function ownerChannelFields(vehicle) {
   if (!opened.size) {
     return `<p class="muted" style="grid-column:1/-1">超级管理员尚未开通任何通知方式，请联系平台管理员在后台「通知通道统一管理」中开启。</p>`;
   }
+  const needPhone = has("sms") || has("privacy_call");
   const parts = [];
+  const switchRow = (id, label, desc, checked) => `<div class="switch-row span-2">
+        <div class="meta"><b>${label}</b><span>${desc}</span></div>
+        <label class="switch"><input type="checkbox" id="${id}" ${checked ? "checked" : ""}><span class="track"></span><span class="thumb"></span></label>
+      </div>`;
   if (has("wechat_work")) {
-    parts.push(`<label class="span-2">企业微信 Webhook
-      <input id="f_wechat" placeholder="https://qyapi.weixin.qq.com/..." value="${escapeHtml(vehicle.wechatWorkWebhook || "")}">
-      <span class="field-hint">${vehicle.wechatWorkEnabled ? "已配置（清空并保存可停用）" : "留空则使用平台默认通道（若管理员已配置）"}</span>
-    </label>`);
+    parts.push(switchRow("f_wechat_work", "企业微信机器人", "匿名推送挪车提醒（平台统一配置）", Boolean(vehicle.wechatWorkEnabled)));
   }
-  if (has("showdoc")) {
-    parts.push(`<label class="span-2">ShowDoc Webhook
-        <input id="f_showdoc" placeholder="https://..." value="${escapeHtml(vehicle.showdocWebhook || "")}">
-      </label>
-      <label class="span-2">ShowDoc Token
-        <input id="f_showdocToken" placeholder="${vehicle.hasShowdocToken ? "已设置（留空则保持不变）" : "可选"}" value="">
-      </label>`);
+  if (has("wechat")) {
+    parts.push(switchRow("f_wechat", "微信通知", "匿名推送挪车提醒（平台统一配置）", Boolean(vehicle.wechatEnabled)));
   }
-  if (has("sms") || has("privacy_call")) {
+  if (has("sms")) {
+    parts.push(switchRow("f_sms", "短信通知", "由平台短信通道下发到车主手机号", Boolean(vehicle.smsEnabled)));
+  }
+  if (has("privacy_call")) {
+    parts.push(switchRow("f_privacy", "隐私号呼叫", "通过隐私号服务呼叫，隐藏真实号码", Boolean(vehicle.privacyCallEnabled)));
+  }
+  if (needPhone) {
     parts.push(`<label class="span-2">车主手机号（短信 / 隐私号需要）
         <input id="f_phone" inputmode="tel" placeholder="${vehicle.ownerPhoneMasked ? `当前：${escapeHtml(vehicle.ownerPhoneMasked)}（留空则不变）` : "用于短信与隐私号呼叫"}" value="">
       </label>`);
-  }
-  if (has("sms")) {
-    parts.push(`<div class="switch-row span-2">
-        <div class="meta"><b>短信通知</b><span>由平台短信通道下发到车主</span></div>
-        <label class="switch"><input type="checkbox" id="f_sms" ${vehicle.smsEnabled ? "checked" : ""}><span class="track"></span><span class="thumb"></span></label>
-      </div>`);
-  }
-  if (has("privacy_call")) {
-    parts.push(`<div class="switch-row span-2">
-        <div class="meta"><b>隐私号呼叫</b><span>通过隐私号服务呼叫，隐藏真实号码</span></div>
-        <label class="switch"><input type="checkbox" id="f_privacy" ${vehicle.privacyCallEnabled ? "checked" : ""}><span class="track"></span><span class="thumb"></span></label>
-      </div>`);
   }
   parts.push(`<button class="btn btn-primary span-2" id="saveChannels">保存渠道配置</button>`);
   return parts.join("");
@@ -216,15 +218,15 @@ function setupBindPage() {
   const plateInput = createPlateInput($("#plateNumberHost"), { input: $("#plateNumber"), allowTypeSwitch: true });
 
   // 平台已开通的通道：未开通的直接隐藏（接口失败时保持全部可见，不阻断使用）
-  const opened = { wechat_work: true, showdoc: true, sms: true, privacy_call: true };
+  const opened = { wechat_work: true, wechat: true, sms: true, privacy_call: true };
   const applyOpened = () => {
     const show = (name, on) => $$(`[data-channel="${name}"]`, form).forEach((el) => el.classList.toggle("hidden", !on));
     show("wechat_work", opened.wechat_work);
-    show("showdoc", opened.showdoc);
+    show("wechat", opened.wechat);
     show("sms", opened.sms);
     show("privacy_call", opened.privacy_call);
-    show("phone", opened.sms || opened.privacy_call);
-    const none = !opened.wechat_work && !opened.showdoc && !opened.sms && !opened.privacy_call;
+    // 手机号必填且直接绑定车牌，无论开通了哪些通道都要显示（无 data-channel 属性）
+    const none = !opened.wechat_work && !opened.wechat && !opened.sms && !opened.privacy_call;
     $("#noChannelNote")?.classList.toggle("hidden", !none);
     const submit = $('button[type="submit"]', form);
     if (submit) submit.disabled = none;
@@ -240,10 +242,9 @@ function setupBindPage() {
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
     const plate = normalizePlate($("#plateNumber")?.value ?? "");
-    const wechatWorkWebhook = form.wechatWorkWebhook.value.trim();
-    const showdocWebhook = form.showdocWebhook.value.trim();
-    const showdocToken = form.showdocToken.value.trim();
     const ownerPhone = normalizePhone(form.ownerPhone.value);
+    const wechatWorkEnabled = form.wechatWorkEnabled.checked;
+    const wechatEnabled = form.wechatEnabled.checked;
     const smsEnabled = form.smsEnabled.checked;
     const privacyCallEnabled = form.privacyCallEnabled.checked;
     const ownerPin = form.ownerPin ? form.ownerPin.value.trim() : "";
@@ -252,11 +253,12 @@ function setupBindPage() {
     try {
       if (plateInput && !plateInput.isValid()) throw new Error("请点选完整车牌（普通 7 位 / 新能源 8 位）。");
       validatePlate(plate);
+      if (!isPhone(ownerPhone)) throw new Error("请填写有效手机号（录入车牌必填，用于通知与换号验证）。");
       if (ownerPin && !/^\d{4,12}$/.test(ownerPin)) throw new Error("管理密码请使用 4-12 位数字。");
       const channels = [];
       // 只能选择在平台已开通范围内的通知方式
-      if (opened.wechat_work && wechatWorkWebhook) channels.push("企业微信");
-      if (opened.showdoc && showdocWebhook) channels.push("ShowDoc");
+      if (opened.wechat_work && wechatWorkEnabled) channels.push("企业微信");
+      if (opened.wechat && wechatEnabled) channels.push("微信通知");
       if (smsEnabled) {
         if (!opened.sms) throw new Error("平台尚未开通短信通知。");
         if (!isPhone(ownerPhone)) throw new Error("开启短信需填写有效手机号。");
@@ -270,23 +272,22 @@ function setupBindPage() {
       if (!channels.length) {
         const names = [
           opened.wechat_work ? "企业微信" : "",
-          opened.showdoc ? "ShowDoc" : "",
+          opened.wechat ? "微信通知" : "",
           opened.sms ? "短信" : "",
           opened.privacy_call ? "隐私号" : "",
         ].filter(Boolean);
         throw new Error(
           names.length
-            ? `请至少配置一种已开通的通知方式（${names.join(" / ")}）。`
+            ? `请至少开启一种已开通的通知方式（${names.join(" / ")}）。`
             : "平台尚未开通任何通知方式，请联系管理员。"
         );
       }
 
       const data = await api.createVehicle({
         plateNumber: plate,
-        wechatWorkWebhook,
-        showdocWebhook,
-        showdocToken,
         ownerPhone,
+        wechatWorkEnabled,
+        wechatEnabled,
         smsEnabled,
         privacyCallEnabled,
         ownerPin,
@@ -317,6 +318,35 @@ function setupBindPage() {
       $("#goOwner", result).onclick = () => (location.href = ownerUrl);
       result.scrollIntoView({ behavior: "smooth", block: "start" });
     } catch (err) {
+      // 车牌重复：不再让重复录入，直接引导「找回」
+      if (err.code === "plate_exists" || err.status === 409) {
+        showResult(
+          result,
+          `<div class="notice">
+             <b>该车牌已录入过</b>
+             <div class="t" style="margin-top:6px">一个车牌只能录入一次。请用「车牌 + 管理密码」找回管理入口${err.maskedPlate ? `（${escapeHtml(err.maskedPlate)}）` : ""}。</div>
+             <div class="grid-form" style="margin-top:10px">
+               <label class="span-2">管理密码
+                 <input id="dupPin" type="password" inputmode="numeric" placeholder="创建时设置的管理密码" autocomplete="current-password" />
+               </label>
+               <button type="button" class="btn btn-primary span-2" id="dupRecover">找回并进入管理后台</button>
+             </div>
+           </div>`
+        );
+        $("#dupRecover", result).onclick = async () => {
+          const pin = ($("#dupPin", result)?.value || "").trim();
+          if (!pin) return toast("请输入管理密码", "err");
+          try {
+            const r = await api.recoverOwner(plate, pin);
+            saveOwnerToken(r.ownerToken, r.maskedPlate);
+            toast("已找回，正在进入后台", "ok");
+            location.href = `${new URL("./owner.html", location.href).toString()}?token=${encodeURIComponent(r.ownerToken)}`;
+          } catch (e) {
+            toast(e.message || "找回失败", "err");
+          }
+        };
+        return;
+      }
       showResult(result, escapeHtml(err.message || "创建失败"), true);
     }
   });
@@ -379,6 +409,14 @@ function setupMovePage() {
         );
       }
       if (notifyBtn) notifyBtn.disabled = false;
+      // 直拨前上报拨号日志（直拨由客户端发起，服务端无法感知）
+      const dcBtn = $("#directCallButton");
+      if (dcBtn) {
+        dcBtn.addEventListener("click", () => {
+          const caller = $("#callerNumber")?.value?.trim() || "";
+          api.reportDirectCall(token, caller).catch(() => {});
+        });
+      }
     } catch (err) {
       showResult(vehicleEl, escapeHtml(err.message || "加载失败"), true);
       if (notifyBtn) notifyBtn.disabled = true;
@@ -391,7 +429,7 @@ function setupMovePage() {
       notifyBtn.classList.add("loading");
       showResult(resultEl, "正在通知车主…");
       try {
-        const r = await api.notify(token, selectedChannel);
+        const r = await api.notify(token, selectedChannel, $("#callerNumber")?.value?.trim() || "");
         showResult(
           resultEl,
           `<div class="notice" style="border-color:rgba(16,185,129,.4);background:rgba(16,185,129,.1);color:#047857">
@@ -546,7 +584,7 @@ async function renderDashboard(ownerToken) {
   const moveUrl = buildMoveUrl(vehicle.vehicleToken);
   const enabled = {
     wechat_work: Boolean(vehicle.wechatWorkEnabled),
-    showdoc: Boolean(vehicle.showdocEnabled),
+    wechat: Boolean(vehicle.wechatEnabled),
     sms: Boolean(vehicle.smsEnabled),
     privacy_call: Boolean(vehicle.privacyCallEnabled),
   };
@@ -645,25 +683,82 @@ async function renderDashboard(ownerToken) {
     } catch (err) { toast(err.message || "生成失败", "err"); }
   };
 
+  // 更换手机号 → 先做身份验证（短信验证码 / 管理密码）
+  function requestPhoneVerification(vehicle) {
+    return new Promise((resolve) => {
+      const smsOk = Boolean(vehicle.global?.sms);
+      let method = smsOk ? "sms" : "pin";
+      openModal({
+        title: "验证身份以更换手机号",
+        body: `<div class="grid-form" style="margin-top:6px">
+          <p class="field-hint" style="grid-column:1/-1">更换绑定手机号需要验证身份，请选择验证方式：</p>
+          <div class="span-2" style="display:flex;gap:8px;flex-wrap:wrap">
+            <button type="button" class="btn btn-sm ${smsOk ? "btn-primary" : "btn-ghost"}" id="pvTabSms" ${smsOk ? "" : "disabled"}>短信验证码</button>
+            <button type="button" class="btn btn-sm ${smsOk ? "btn-ghost" : "btn-primary"}" id="pvTabPin" ${vehicle.hasPin ? "" : "disabled"}>管理密码</button>
+          </div>
+          ${smsOk ? "" : `<p class="field-hint" style="grid-column:1/-1">平台未开通短信通道，只能使用管理密码验证。</p>`}
+          ${vehicle.hasPin ? "" : `<p class="field-hint" style="grid-column:1/-1">未设置管理密码，只能使用短信验证码。</p>`}
+          <label class="span-2" id="pvLabel">短信验证码
+            <div style="display:flex;gap:8px">
+              <input id="pvInput" inputmode="numeric" placeholder="6 位验证码" style="flex:1" />
+              <button type="button" class="btn btn-sm" id="pvSend" style="white-space:nowrap">发送验证码</button>
+            </div>
+          </label>
+        </div>`,
+        confirmText: "验证并保存",
+        onOpen: () => {
+          const input = $("#pvInput");
+          const label = $("#pvLabel");
+          const sendBtn = $("#pvSend");
+          const tabSms = $("#pvTabSms");
+          const tabPin = $("#pvTabPin");
+          const apply = () => {
+            const isSms = method === "sms";
+            if (label) label.childNodes[0].nodeValue = isSms ? "短信验证码" : "管理密码";
+            if (input) { input.placeholder = isSms ? "6 位验证码" : "管理密码"; input.value = ""; input.type = isSms ? "text" : "password"; }
+            if (sendBtn) sendBtn.classList.toggle("hidden", !isSms);
+            tabSms?.classList.toggle("btn-primary", isSms);
+            tabSms?.classList.toggle("btn-ghost", !isSms);
+            tabPin?.classList.toggle("btn-primary", !isSms);
+            tabPin?.classList.toggle("btn-ghost", isSms);
+          };
+          tabSms?.addEventListener("click", () => { if (!smsOk) return; method = "sms"; apply(); });
+          tabPin?.addEventListener("click", () => { if (!vehicle.hasPin) return; method = "pin"; apply(); });
+          sendBtn?.addEventListener("click", async () => {
+            sendBtn.disabled = true;
+            try {
+              const r = await api.sendPhoneVerifyCode(ownerToken);
+              toast(r.message || "验证码已发送", "ok");
+            } catch (err) {
+              toast(err.message || "发送失败", "err");
+            } finally {
+              sendBtn.disabled = false;
+            }
+          });
+          apply();
+        },
+        onConfirm: () => resolve({ method, value: ($("#pvInput")?.value || "").trim() }),
+        onCancel: () => resolve(null),
+      });
+    });
+  }
+
   $("#saveChannels", mount).onclick = async () => {
     // 未开通的通道字段不会渲染，取值时做空值兜底
-    const txt = (id) => ($(`#${id}`, mount) ? $("#" + id, mount).value.trim() : "");
     const chk = (id) => ($(`#${id}`, mount) ? $("#" + id, mount).checked : false);
-    const wechat = txt("f_wechat");
-    const showdoc = txt("f_showdoc");
-    const showdocToken = txt("f_showdocToken");
-    const phone = normalizePhone(txt("f_phone"));
+    const phone = normalizePhone(($(("#f_phone", mount)) ? $("#f_phone", mount).value.trim() : ""));
+    const wechatWork = chk("f_wechat_work");
+    const wechat = chk("f_wechat");
     const sms = chk("f_sms");
     const privacy = chk("f_privacy");
 
-    // 只提交「实际改动过」的字段：文本清空=停用，留空=保持原值；开关始终提交明确状态
+    // 只提交「实际改动过」的开关与手机号
     const patch = {};
-    if (wechat !== (vehicle.wechatWorkWebhook || "")) patch.wechatWorkWebhook = wechat;
-    if (showdoc !== (vehicle.showdocWebhook || "")) patch.showdocWebhook = showdoc;
-    if (showdocToken) patch.showdocToken = showdocToken;
-    if (phone) patch.ownerPhone = phone;
+    if (wechatWork !== Boolean(vehicle.wechatWorkEnabled)) patch.wechatWorkEnabled = wechatWork;
+    if (wechat !== Boolean(vehicle.wechatEnabled)) patch.wechatEnabled = wechat;
     if (sms !== Boolean(vehicle.smsEnabled)) patch.smsEnabled = sms;
     if (privacy !== Boolean(vehicle.privacyCallEnabled)) patch.privacyCallEnabled = privacy;
+    if (phone) patch.ownerPhone = phone;
 
     if (!Object.keys(patch).length) return toast("没有需要保存的改动", "");
 
@@ -671,6 +766,14 @@ async function renderDashboard(ownerToken) {
     const willPrivacy = "privacyCallEnabled" in patch ? patch.privacyCallEnabled : Boolean(vehicle.privacyCallEnabled);
     if ((willSms || willPrivacy) && !phone && !vehicle.hasPhone) {
       return toast("开启短信 / 隐私号需填写手机号", "err");
+    }
+    // 换号必验证：短信验证码 或 管理密码
+    if (phone) {
+      const v = await requestPhoneVerification(vehicle);
+      if (!v) return; // 用户取消
+      if (!v.value) return toast(v.method === "sms" ? "请输入短信验证码" : "请输入管理密码", "err");
+      if (v.method === "sms") patch.phoneVerify = { method: "sms", code: v.value };
+      else patch.phoneVerify = { method: "pin", pin: v.value };
     }
     try {
       await api.patchOwnerVehicle(ownerToken, patch);
@@ -713,17 +816,17 @@ async function renderDashboard(ownerToken) {
 const ADMIN_GROUPS = [
   { title: "腾讯云 · 短信与 OCR", keys: ["tencent_secret_id", "tencent_secret_key", "tencent_sms_app_id", "tencent_sms_sign_name", "tencent_sms_template_id", "tencent_sms_region", "tencent_ocr_region"] },
   { title: "企业微信 · 默认通道", keys: ["wechat_work_webhook"] },
+  { title: "微信通知 · 默认通道", keys: ["wechat_notify_webhook"] },
   { title: "隐私号呼叫", keys: ["privacy_call_webhook_url", "privacy_call_webhook_token"] },
-  { title: "ShowDoc · 默认通道", keys: ["showdoc_webhook", "showdoc_token"] },
   { title: "其他", keys: ["default_phone_country_code", "ocr_demo_plate", "ocr_demo_mode"] },
-  { title: "平台通道开关", keys: ["sms_enabled_global", "wechat_enabled_global", "privacy_enabled_global", "showdoc_enabled_global"] },
+  { title: "平台通道开关", keys: ["sms_enabled_global", "wechat_enabled_global", "wechat_notify_enabled_global", "privacy_enabled_global", "direct_call_enabled_global"] },
 ];
-const BOOL_KEYS = new Set(["ocr_demo_mode", "sms_enabled_global", "wechat_enabled_global", "privacy_enabled_global", "showdoc_enabled_global", "direct_call_enabled_global"]);
+const BOOL_KEYS = new Set(["ocr_demo_mode", "sms_enabled_global", "wechat_enabled_global", "wechat_notify_enabled_global", "privacy_enabled_global", "direct_call_enabled_global"]);
 
 // 通道分组兜底（正常由后端 /api/admin/config 返回 groups）
 const CHANNEL_GROUPS_FALLBACK = [
   { key: "wechat_work", label: "企业微信机器人", icon: "💬" },
-  { key: "showdoc", label: "ShowDoc", icon: "📄" },
+  { key: "wechat", label: "微信通知", icon: "📨" },
   { key: "sms", label: "短信通知", icon: "📱" },
   { key: "privacy_call", label: "隐私号呼叫", icon: "☎️" },
   { key: "direct_call", label: "直拨车主（回退）", icon: "📞" },
@@ -796,7 +899,7 @@ function renderChannelConfig(settings, groups, status = {}) {
 
 const CHANNEL_HINTS = {
   wechat_work: "车主未单独配置时使用这里的默认 Webhook",
-  showdoc: "车主未单独配置时使用这里的默认 Webhook",
+  wechat: "微信通知（超管统一配置，匿名推送挪车提醒）",
   sms: "支持腾讯云 / 阿里云 / 自定义 Webhook 三家服务商",
   privacy_call: "支持自定义 Webhook / 腾讯云号码保护 / 阿里云号码保护",
   direct_call: "隐私号未开通时，访客可直接拨打车主真实号码（请谨慎开启）",
@@ -929,7 +1032,7 @@ async function renderAdminConsole(token) {
       <div id="vhResult" class="result hidden" style="margin-top:10px"></div>
       <details style="margin-top:12px">
         <summary class="muted" style="cursor:pointer">导入格式说明</summary>
-        <p class="field-hint" style="margin-top:8px">支持 CSV 与 JSON。CSV 表头顺序：<b>车牌号,查看密码,手机号,短信通知,隐私号呼叫,企业微信Webhook,ShowDocWebhook</b>（表头行可省略；开关填「是/否」）。重复车牌会自动跳过，不会覆盖已有绑定。</p>
+        <p class="field-hint" style="margin-top:8px">支持 CSV 与 JSON。CSV 表头顺序：<b>车牌号,查看密码,手机号,短信通知,隐私号呼叫,企业微信Webhook,微信通知</b>（表头行可省略；开关填「是/否」）。重复车牌会自动跳过，不会覆盖已有绑定。</p>
       </details>
     </section>
 
@@ -958,6 +1061,58 @@ async function renderAdminConsole(token) {
         <button type="submit" class="btn btn-primary span-2">查询</button>
       </form>
       <div id="adminLookupResult" class="result hidden" style="margin-top:12px"></div>
+    </section>
+
+    <!-- 拨号日志 -->
+    <section class="card span-2">
+      <h2>📞 拨号日志</h2>
+      <p class="muted">隐私拨号与直拨都会记录（含拨号方 / 被叫 / 隐私中间号）。支持按条件筛选、批量导出与批量删除。</p>
+
+      <div class="grid-form" id="clFilterForm" style="margin-top:12px">
+        <label>车牌（模糊）
+          <input id="clQ" placeholder="如 粤B 或 完整车牌" />
+        </label>
+        <label>号码后 4 位
+          <input id="clLast4" placeholder="如 5678" inputmode="numeric" />
+        </label>
+        <label>拨号方式
+          <select id="clChannel">
+            <option value="">全部</option>
+            <option value="privacy_call">隐私拨号</option>
+            <option value="direct_call">直拨</option>
+          </select>
+        </label>
+        <label>状态
+          <select id="clStatus">
+            <option value="">全部</option>
+            <option value="success">成功</option>
+            <option value="failed">失败</option>
+          </select>
+        </label>
+        <label>开始日期
+          <input id="clFrom" type="date" />
+        </label>
+        <label>结束日期
+          <input id="clTo" type="date" />
+        </label>
+      </div>
+      <div class="row-actions" style="margin-top:10px">
+        <button class="btn btn-sm btn-primary" id="clSearch">查询</button>
+        <button class="btn btn-sm btn-ghost" id="clReset">重置</button>
+        <button class="btn btn-sm btn-ghost" id="clExport">导出筛选结果 CSV</button>
+        <button class="btn btn-sm btn-ghost" id="clExportAll">导出全部 CSV</button>
+        <button class="btn btn-sm btn-danger" id="clDeleteSel">删除所选</button>
+        <button class="btn btn-sm btn-danger" id="clDeleteFiltered">按筛选条件清空</button>
+      </div>
+      <div class="row-actions" style="margin-top:8px">
+        <label class="switch" style="display:flex;align-items:center;gap:8px">
+          <input type="checkbox" id="clSelectAll" /><span class="track"></span><span class="thumb"></span>
+          <span class="muted" style="font-size:13px">全选本页</span>
+        </label>
+        <span class="muted" id="clCount" style="font-size:13px"></span>
+      </div>
+      <div id="clListBox" style="margin-top:12px"><p class="muted">正在加载…</p></div>
+      <div id="clResult" class="result hidden" style="margin-top:10px"></div>
     </section>
 
     <!-- 广告位管理 -->
@@ -1083,11 +1238,11 @@ async function renderAdminConsole(token) {
     try {
       const r = await api.adminExportVehicles(token);
       const list = r.vehicles || [];
-      const rows = [["车牌号", "查看密码", "手机号", "短信通知", "隐私号呼叫", "企业微信Webhook", "ShowDocWebhook", "绑定ID", "创建时间"]];
+      const rows = [["车牌号", "查看密码", "手机号", "短信通知", "隐私号呼叫", "企业微信Webhook", "微信通知", "绑定ID", "创建时间"]];
       list.forEach((v) => rows.push([
         v.plateNumber, "", v.ownerPhone,
         v.smsEnabled ? "是" : "否", v.privacyCallEnabled ? "是" : "否",
-        v.wechatWorkWebhook, v.showdocWebhook, v.id, fmtDate(v.createdAt),
+        v.wechatWorkWebhook, v.wechatEnabled ? "是" : "否", v.id, fmtDate(v.createdAt),
       ]));
       const csv = rows
         .map((cells) => cells.map((c) => {
@@ -1143,6 +1298,9 @@ async function renderAdminConsole(token) {
       showResult(result, escapeHtml(err.message || "保存失败"), true);
     }
   });
+
+  // 拨号日志
+  setupCallLogs(token, mount);
 
   // 车牌查询
   const lkPlateInput = createPlateInput($("#lkPlateHost", mount), { input: $("#lkPlate", mount), allowTypeSwitch: true });
@@ -1356,8 +1514,8 @@ function renderAdminVehiclesList(token, vehicles) {
           <div class="t">创建 ${escapeHtml(fmtDate(v.createdAt))}</div>
         </div>
         <div class="channels" style="flex:1 1 100%">
-          ${channelPill("wechat_work", Boolean(v.wechatWorkWebhook))}
-          ${channelPill("showdoc", Boolean(v.showdocWebhook))}
+          ${channelPill("wechat_work", Boolean(v.wechatWorkEnabled))}
+          ${channelPill("wechat", Boolean(v.wechatEnabled))}
           ${channelPill("sms", Boolean(v.smsEnabled))}
           ${channelPill("privacy_call", Boolean(v.privacyCallEnabled))}
         </div>
@@ -1412,6 +1570,142 @@ function renderAdminVehiclesList(token, vehicles) {
   );
 }
 
+/* ---------------- 拨号日志（后台） ---------------- */
+const CALL_CHANNEL_LABELS = { privacy_call: "隐私拨号", direct_call: "直拨" };
+
+function collectCallLogFilters(mount) {
+  const v = (id) => ($(`#${id}`, mount)?.value ?? "").trim();
+  const params = {};
+  if (v("clQ")) params.q = v("clQ");
+  if (v("clLast4")) params.last4 = v("clLast4");
+  if (v("clChannel")) params.channel = v("clChannel");
+  if (v("clStatus")) params.status = v("clStatus");
+  if (v("clFrom")) params.from = v("clFrom");
+  if (v("clTo")) params.to = v("clTo");
+  return params;
+}
+
+async function reloadCallLogs(token, mount) {
+  const box = $("#clListBox", mount);
+  const result = $("#clResult", mount);
+  const count = $("#clCount", mount);
+  if (box) box.innerHTML = `<p class="muted">正在加载…</p>`;
+  const filters = collectCallLogFilters(mount);
+  try {
+    const r = await api.adminListCallLogs(token, { ...filters, limit: 100 });
+    renderCallLogs(token, mount, r.logs || [], r.total || 0);
+    if (count) count.textContent = `共 ${r.total || 0} 条` + (Object.keys(filters).length ? "（已筛选）" : "");
+  } catch (err) {
+    if (err.status === 401) { clearAdminToken(); renderAdminLogin(); return; }
+    if (box) box.innerHTML = `<p class="muted">${escapeHtml(err.message || "加载失败")}</p>`;
+  }
+}
+
+function renderCallLogs(token, mount, logs, total) {
+  const box = $("#clListBox", mount);
+  if (!box) return;
+  if (!logs.length) {
+    box.innerHTML = `<p class="muted">没有符合条件的拨号记录。</p>`;
+    return;
+  }
+  box.innerHTML = `<div class="log-list">` + logs.map((l) => `
+      <div class="log-item" style="flex-wrap:wrap;align-items:flex-start;gap:8px">
+        <label class="switch" style="flex:none"><input type="checkbox" data-cl-id="${l.id}" /><span class="track"></span><span class="thumb"></span></label>
+        <div style="flex:1;min-width:180px">
+          <div class="ch" style="font-size:15px">${escapeHtml(l.plateNumber || l.maskedPlate || "-")} · ${escapeHtml(CALL_CHANNEL_LABELS[l.channel] || l.channel)}</div>
+          <div class="t">拨号方：${l.callerNumber ? escapeHtml(l.callerNumber) : "<span class='muted'>未提供</span>"}</div>
+          <div class="t">被叫（车主）：${l.calleeNumber ? escapeHtml(l.calleeNumber) : "-"}${l.virtualNumber ? ` · 中间号：${escapeHtml(l.virtualNumber)}` : ""}</div>
+          <div class="t">${escapeHtml(fmtDate(l.createdAt))}${l.errorSummary ? ` · ${escapeHtml(l.errorSummary)}` : ""}</div>
+        </div>
+        <span class="pill ${l.status === "success" ? "ok" : "err"}"><span class="dot"></span>${l.status === "success" ? "成功" : "失败"}</span>
+      </div>`).join("") + `</div>`;
+
+  const selAll = $("#clSelectAll", mount);
+  if (selAll) {
+    selAll.checked = false;
+    selAll.onchange = () => $$("[data-cl-id]", box).forEach((c) => (c.checked = selAll.checked));
+  }
+}
+
+function selectedCallLogIds(mount) {
+  return $$("[data-cl-id]", mount).filter((c) => c.checked).map((c) => Number(c.dataset.clId));
+}
+
+function setupCallLogs(token, mount) {
+  const result = $("#clResult", mount);
+  const search = () => reloadCallLogs(token, mount);
+  $("#clSearch", mount).onclick = search;
+  $("#clReset", mount).onclick = () => {
+    ["clQ", "clLast4", "clChannel", "clStatus", "clFrom", "clTo"].forEach((id) => { const el = $(`#${id}`, mount); if (el) el.value = ""; });
+    search();
+  };
+
+  const downloadCsv = async (all) => {
+    showResult(result, "正在导出…");
+    try {
+      const filters = all ? {} : collectCallLogFilters(mount);
+      const r = await api.adminExportCallLogs(token, filters);
+      const list = r.logs || [];
+      const rows = [["日志ID", "车牌号", "拨号方式", "拨号方号码", "被叫车主号码", "隐私中间号", "状态", "失败原因", "时间"]];
+      list.forEach((l) => rows.push([
+        l.id, l.plateNumber || l.maskedPlate || "", CALL_CHANNEL_LABELS[l.channel] || l.channel,
+        l.callerNumber || "", l.calleeNumber || "", l.virtualNumber || "",
+        l.status === "success" ? "成功" : "失败", l.errorSummary || "", fmtDate(l.createdAt),
+      ]));
+      const csv = rows.map((cells) => cells.map((c) => {
+        const s = String(c ?? "");
+        return /[",\n]/.test(s) ? `"${s.replaceAll('"', '""')}"` : s;
+      }).join(",")).join("\r\n");
+      downloadFile(`move-car-call-logs-${new Date().toISOString().slice(0, 10)}.csv`, "\ufeff" + csv);
+      showResult(result, `✅ 已导出 ${list.length} 条拨号日志。`);
+      toast("已导出", "ok");
+    } catch (err) {
+      if (err.status === 401) { clearAdminToken(); renderAdminLogin(); return; }
+      showResult(result, escapeHtml(err.message || "导出失败"), true);
+    }
+  };
+  $("#clExport", mount).onclick = () => downloadCsv(false);
+  $("#clExportAll", mount).onclick = () => downloadCsv(true);
+
+  $("#clDeleteSel", mount).onclick = async () => {
+    const ids = selectedCallLogIds(mount);
+    if (!ids.length) return toast("请先勾选要删除的日志", "err");
+    openModal({
+      title: "删除所选拨号日志？",
+      body: `将删除 <b>${ids.length}</b> 条拨号记录，删除后不可恢复。`,
+      confirmText: "确认删除",
+      danger: true,
+      onConfirm: async () => {
+        try {
+          const r = await api.adminBulkDeleteCallLogs(token, {}, { ids });
+          toast(r.message || "已删除", "ok");
+          await reloadCallLogs(token, mount);
+        } catch (err) { toast(err.message || "删除失败", "err"); }
+      },
+    });
+  };
+
+  $("#clDeleteFiltered", mount).onclick = () => {
+    const filters = collectCallLogFilters(mount);
+    if (!Object.keys(filters).length) return toast("请先设置筛选条件，避免误删全部日志", "err");
+    openModal({
+      title: "按筛选条件清空日志？",
+      body: `将删除符合当前筛选条件的<b>全部</b>拨号记录（不只是本页），删除后不可恢复。<br/><span class="muted">条件：${escapeHtml(JSON.stringify(filters))}</span>`,
+      confirmText: "确认清空",
+      danger: true,
+      onConfirm: async () => {
+        try {
+          const r = await api.adminBulkDeleteCallLogs(token, filters, { all: true });
+          toast(r.message || "已删除", "ok");
+          await reloadCallLogs(token, mount);
+        } catch (err) { toast(err.message || "删除失败", "err"); }
+      },
+    });
+  };
+
+  reloadCallLogs(token, mount);
+}
+
 function openVehicleEditor(token, vehicle) {
   const isEdit = Boolean(vehicle);
   let vePlateInput;
@@ -1425,12 +1719,17 @@ function openVehicleEditor(token, vehicle) {
         <label class="span-2">车主手机号（短信 / 隐私号需要）
           <input id="vePhone" value="${escapeHtml(vehicle?.ownerPhone || "")}" placeholder="11 位手机号" />
         </label>
-        <label class="span-2">企业微信 Webhook
+        <label class="span-2">企业微信机器人 Webhook（留空则用平台默认）
           <input id="veWechat" value="${escapeHtml(vehicle?.wechatWorkWebhook || "")}" placeholder="https://qyapi.weixin.qq.com/..." />
         </label>
-        <label class="span-2">ShowDoc Webhook
-          <input id="veShowdoc" value="${escapeHtml(vehicle?.showdocWebhook || "")}" placeholder="https://..." />
-        </label>
+        <div class="switch-row span-2">
+          <div class="meta"><b>企业微信机器人</b><span>通过企业微信群机器人推送挪车提醒</span></div>
+          <label class="switch"><input type="checkbox" id="veWechatWorkEnabled" ${vehicle?.wechatWorkEnabled ? "checked" : ""}><span class="track"></span><span class="thumb"></span></label>
+        </div>
+        <div class="switch-row span-2">
+          <div class="meta"><b>微信通知</b><span>使用平台统一配置的微信通知（匿名推送）</span></div>
+          <label class="switch"><input type="checkbox" id="veWechatEnabled" ${vehicle?.wechatEnabled ? "checked" : ""}><span class="track"></span><span class="thumb"></span></label>
+        </div>
         <div class="switch-row span-2">
           <div class="meta"><b>短信通知</b><span>需填手机号 + 平台短信通道</span></div>
           <label class="switch"><input type="checkbox" id="veSms" ${vehicle?.smsEnabled ? "checked" : ""}><span class="track"></span><span class="thumb"></span></label>
@@ -1457,7 +1756,8 @@ function openVehicleEditor(token, vehicle) {
         plateNumber: normalizePlate($("#vePlate")?.value ?? ""),
         ownerPhone: $("#vePhone").value.trim(),
         wechatWorkWebhook: $("#veWechat").value.trim(),
-        showdocWebhook: $("#veShowdoc").value.trim(),
+        wechatWorkEnabled: $("#veWechatWorkEnabled").checked,
+        wechatEnabled: $("#veWechatEnabled").checked,
         smsEnabled: $("#veSms").checked,
         privacyCallEnabled: $("#vePrivacy").checked,
       };
@@ -1541,7 +1841,7 @@ function openAdminPasswordModal(token) {
 }
 
 /* ---------------- 导入解析（CSV / JSON） ---------------- */
-const IMPORT_HEADERS = ["车牌号", "查看密码", "手机号", "短信通知", "隐私号呼叫", "企业微信Webhook", "ShowDocWebhook"];
+const IMPORT_HEADERS = ["车牌号", "查看密码", "手机号", "短信通知", "隐私号呼叫", "企业微信Webhook", "微信通知"];
 
 function truthyFlag(value) {
   if (typeof value === "boolean") return value;
@@ -1556,7 +1856,7 @@ function normalizeImportItem(raw) {
     smsEnabled: truthyFlag(raw.smsEnabled ?? raw["短信通知"]),
     privacyCallEnabled: truthyFlag(raw.privacyCallEnabled ?? raw["隐私号呼叫"]),
     wechatWorkWebhook: String(raw.wechatWorkWebhook ?? raw["企业微信Webhook"] ?? "").trim(),
-    showdocWebhook: String(raw.showdocWebhook ?? raw["ShowDocWebhook"] ?? "").trim(),
+    wechatEnabled: truthyFlag(raw.wechatEnabled ?? raw["微信通知"]),
   };
 }
 
@@ -1582,7 +1882,7 @@ function parseVehicleImport(text) {
       smsEnabled: cells[3],
       privacyCallEnabled: cells[4],
       wechatWorkWebhook: cells[5],
-      showdocWebhook: cells[6],
+      wechatEnabled: cells[6],
     }));
   }
   return out.filter((x) => x.plateNumber);

@@ -44,7 +44,7 @@ ok("干净状态下 sms / privacy 均未开通", ch.data.channels.sms === false 
 console.log("\n=== 2. 平台通道查询（公开接口） ===");
 ch = await call("GET", "/api/channels");
 ok("/api/channels 200", ch.status === 200);
-ok("返回 5 个通道状态", ["wechat_work", "showdoc", "sms", "privacy_call", "direct_call"].every((k) => typeof ch.data.channels[k] === "boolean"), JSON.stringify(ch.data.channels));
+ok("返回 5 个通道状态", ["wechat_work", "wechat", "sms", "privacy_call", "direct_call"].every((k) => typeof ch.data.channels[k] === "boolean"), JSON.stringify(ch.data.channels));
 ok("企业微信默认开通（开关默认 true）", ch.data.channels.wechat_work === true);
 ok("返回通道分组元信息", Array.isArray(ch.data.groups) && ch.data.groups.length === 5);
 

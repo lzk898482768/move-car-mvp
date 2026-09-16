@@ -32,7 +32,7 @@
       <div class="ad-slot hidden" data-ad-position="home_top"></div>
 
       <section class="panel">
-        <h2>1 · 车辆与通知方式</h2>
+        <h2>1 · 车辆信息</h2>
         <form id="bindForm" class="grid-form">
           <label class="span-2">车牌号
             <input id="plateNumber" name="plateNumber" placeholder="例如 粤A12345" autocomplete="off" />
@@ -40,20 +40,29 @@
             <span class="field-hint">点击车牌框，用专用键盘点选；新能源车牌自动多一位（8 位）。</span>
           </label>
 
-          <label class="span-2" data-channel="wechat_work">企业微信机器人 Webhook（可选）
-            <input id="wechatWorkWebhook" name="wechatWorkWebhook" placeholder="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=..." autocomplete="off" />
-            <span class="field-hint">在企业微信群里添加「群机器人」即可获得。</span>
+          <label class="span-2">车主手机号（必填，直接绑定到车牌）
+            <input id="ownerPhone" name="ownerPhone" inputmode="tel" placeholder="11 位手机号" autocomplete="off" required />
+            <span class="field-hint">用于短信 / 隐私号通知与换号验证。更换手机号需短信验证码或管理密码验证。</span>
           </label>
 
-          <label class="span-2" data-channel="showdoc">ShowDoc Webhook（可选）
-            <input id="showdocWebhook" name="showdocWebhook" placeholder="https://你的showdoc地址/webhook/..." autocomplete="off" />
-          </label>
-          <label class="span-2" data-channel="showdoc">ShowDoc Token（可选）
-            <input id="showdocToken" name="showdocToken" placeholder="如需要鉴权则填写" autocomplete="off" />
+          <label class="span-2">管理密码（4-12 位，用于找回管理入口）
+            <input id="ownerPin" name="ownerPin" type="password" inputmode="numeric" placeholder="设置一个自己记得住的密码" autocomplete="new-password" />
+            <span class="field-hint">换手机 / 清缓存后，用「车牌 + 管理密码」即可重新进入管理后台。</span>
           </label>
 
+          <h2 class="span-2">2 · 选择通知方式</h2>
+          <p class="form-note span-2">以下方式由平台统一开通，仅勾选你需要的（至少一种）：</p>
+
+          <div class="switch-row span-2" data-channel="wechat_work">
+            <div class="meta"><b>企业微信机器人</b><span>管理员统一配置的企微机器人，匿名推送挪车提醒</span></div>
+            <label class="switch"><input type="checkbox" id="wechatWorkEnabled" name="wechatWorkEnabled" /><span class="track"></span><span class="thumb"></span></label>
+          </div>
+          <div class="switch-row span-2" data-channel="wechat">
+            <div class="meta"><b>微信通知</b><span>管理员统一配置的微信推送（Webhook）</span></div>
+            <label class="switch"><input type="checkbox" id="wechatEnabled" name="wechatEnabled" /><span class="track"></span><span class="thumb"></span></label>
+          </div>
           <div class="switch-row span-2" data-channel="sms">
-            <div class="meta"><b>短信通知</b><span>需填写手机号，由平台短信通道下发</span></div>
+            <div class="meta"><b>短信通知</b><span>由平台短信通道下发到车主手机号</span></div>
             <label class="switch"><input type="checkbox" id="smsEnabled" name="smsEnabled" /><span class="track"></span><span class="thumb"></span></label>
           </div>
           <div class="switch-row span-2" data-channel="privacy_call">
@@ -61,22 +70,13 @@
             <label class="switch"><input type="checkbox" id="privacyCallEnabled" name="privacyCallEnabled" /><span class="track"></span><span class="thumb"></span></label>
           </div>
 
-          <label class="span-2" data-channel="phone">车主手机号（短信 / 隐私号需要）
-            <input id="ownerPhone" name="ownerPhone" inputmode="tel" placeholder="11 位手机号" autocomplete="off" />
-          </label>
-
           <div class="span-2 hidden" id="noChannelNote">
             <div class="notice error">平台尚未开通任何通知方式，请联系管理员在后台「通知通道统一管理」中开启后再来创建。</div>
           </div>
 
-          <label class="span-2">管理密码（4-12 位，用于找回管理入口）
-            <input id="ownerPin" name="ownerPin" type="password" inputmode="numeric" placeholder="设置一个自己记得住的密码" autocomplete="new-password" />
-            <span class="field-hint">换手机 / 清缓存后，用「车牌 + 管理密码」即可重新进入管理后台。</span>
-          </label>
-
           <button type="submit" class="btn btn-primary span-2">创建挪车码</button>
         </form>
-        <p class="form-note">至少配置一种通知方式。手机号仅保存在后端加密存储，访客不可见。</p>
+        <p class="form-note">手机号仅保存在后端加密存储，访客不可见。至少选择一种通知方式。</p>
         <div id="bindResult" class="result hidden" style="margin-top:14px"></div>
       </section>
     </main>
@@ -88,6 +88,6 @@
       <a href="./setup.html"><span class="ic">ℹ️</span>说明</a>
     </nav>
 
-    <script src="./app.js?v=20260915b" type="module"></script>
+    <script src="./app.js?v=20260916a" type="module"></script>
   </body>
 </html>
