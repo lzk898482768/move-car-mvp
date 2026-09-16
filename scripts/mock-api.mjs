@@ -199,9 +199,8 @@ function token(prefix) {
 }
 
 function maskPlate(value) {
-  const plate = String(value || "").trim().replace(/\s+/g, "").toUpperCase();
-  if (plate.length <= 3) return "***";
-  return `${plate.slice(0, 2)}***${plate.slice(-2)}`;
+  // 全站车牌完整显示（不再用 * 打码）
+  return String(value || "").trim().replace(/\s+/g, "").toUpperCase();
 }
 
 function hash(value) {

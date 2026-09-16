@@ -353,7 +353,7 @@ async function handleCreateVehicle({ request, env }) {
       {
         error: "plate_exists",
         message: "该车牌已录入过，一个车牌只能录入一次。请用「车牌 + 管理密码」找回管理入口。",
-        maskedPlate: exists.plate_number_masked,
+        maskedPlate: normalizePlate(input.plateNumber),
         canRecover: Boolean(exists.owner_pin_hash),
       },
       409
@@ -450,7 +450,7 @@ async function handlePublicVehicle({ env, params }) {
     }
   }
   return json({
-    maskedPlate: vehicle.plate_number_masked,
+    maskedPlate: await plateDisplay(env, vehicle),
     availableChannels: channels,
     callMode,
     directCall,
@@ -519,6 +519,8 @@ async function handleNotify({ request, env, params }) {
 }
 
 async function dispatchNotify(vehicle, g, env, channel, input = {}) {
+  // 通知内容统一使用完整车牌（不再打码）
+  vehicle.plateDisplay = await plateDisplay(env, vehicle);
   if (channel === "notify_all") {
     // 一键通知：企业微信 + 微信公众号模板消息同时送达（任一失败不影响另一个，只要有一个成功即算成功）
     const results = await Promise.allSettled([
@@ -555,7 +557,7 @@ async function sendWechatWorkChannel(vehicle, g, env) {
 async function sendWechatWork(webhook, vehicle) {
   const body = {
     msgtype: "text",
-    text: { content: `扫码挪车提醒：车辆 ${vehicle.plate_number_masked} 收到挪车提醒，请及时处理。` },
+    text: { content: `扫码挪车提醒：车辆 ${vehicle.plateDisplay} 收到挪车提醒，请及时处理。` },
   };
   const res = await fetch(webhook, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
   if (!res.ok) throw new Error(`企业微信通知失败：${res.status}`);
@@ -576,7 +578,7 @@ async function sendWechatTemplate(vehicle, g, env) {
   const token = await getWechatAccessToken(env, g);
   const data = {
     first: { value: g.wechat_mp_template_title || "您的爱车收到挪车提醒" },
-    keyword1: { value: vehicle.plate_number_masked },
+    keyword1: { value: vehicle.plateDisplay },
     keyword2: { value: formatCnTime(new Date()) },
     remark: { value: g.wechat_mp_template_remark || "请尽快前往挪车，感谢配合。" },
   };
@@ -648,7 +650,7 @@ async function sendAliyunSms(vehicle, env, g) {
       PhoneNumbers: toE164(phone, g.default_phone_country_code || "+86").replace("+", ""),
       SignName: g.aliyun_sms_sign_name,
       TemplateCode: g.aliyun_sms_template_code,
-      TemplateParam: JSON.stringify({ code: vehicle.plate_number_masked, plate: vehicle.plate_number_masked }),
+      TemplateParam: JSON.stringify({ code: vehicle.plateDisplay, plate: vehicle.plateDisplay }),
     }
   );
   if (result.Code && result.Code !== "OK") throw new Error(result.Message || result.Code);
@@ -665,8 +667,8 @@ async function sendCustomSms(vehicle, env, g) {
     },
     body: JSON.stringify({
       phone,
-      maskedPlate: vehicle.plate_number_masked,
-      templateVar: vehicle.plate_number_masked,
+      maskedPlate: vehicle.plateDisplay,
+      templateVar: vehicle.plateDisplay,
       purpose: "move_car_notify",
       vendor: "custom",
     }),
@@ -696,7 +698,7 @@ async function sendTencentSms(vehicle, env, g) {
       SmsSdkAppId: g.tencent_sms_app_id,
       SignName: g.tencent_sms_sign_name,
       TemplateId: g.tencent_sms_template_id,
-      TemplateParamSet: [vehicle.plate_number_masked],
+      TemplateParamSet: [vehicle.plateDisplay],
       PhoneNumberSet: [toE164(phone, g.default_phone_country_code || "+86")],
     },
   });
@@ -736,7 +738,7 @@ async function startCustomPrivacyCall(vehicle, env, g, input = {}) {
     body: JSON.stringify({
       phone,
       callerNumber: input.callerNumber || "",
-      maskedPlate: vehicle.plate_number_masked,
+      maskedPlate: vehicle.plateDisplay,
       vendor: "custom",
       purpose: "move_car_privacy_call",
     }),
@@ -915,7 +917,7 @@ async function handleOwnerVehicle({ env, params }) {
   } catch {}
   return json({
     vehicleToken: vehicle.vehicle_token,
-    maskedPlate: vehicle.plate_number_masked,
+    maskedPlate: plateNumber || vehicle.plate_number_masked,
     plateNumber: plateNumber || vehicle.plate_number_masked,
     // 一键通知：企微 + 微信模板消息（两者同开同关）
     notifyAllEnabled: Boolean(vehicle.wechat_work_enabled && vehicle.wechat_enabled),
@@ -1161,7 +1163,7 @@ async function handleRegenerateVehicleToken({ env, params }) {
   if (!vehicle) return json({ error: "not_found", message: "管理链接无效。" }, 404);
   const vehicleToken = await token("veh");
   await env.DB.prepare("UPDATE vehicles SET vehicle_token = ?, updated_at = ? WHERE id = ?").bind(vehicleToken, nowIso(), vehicle.id).run();
-  return json({ vehicleToken, maskedPlate: vehicle.plate_number_masked });
+  return json({ vehicleToken, maskedPlate: await plateDisplay(env, vehicle) });
 }
 
 async function handleDeleteOwnerVehicle({ env, params }) {
@@ -1195,7 +1197,7 @@ async function handleRecoverOwner({ request, env }) {
     .bind(plateHash, pinHash)
     .first();
   if (!vehicle) return json({ error: "not_found", message: "未找到匹配的车辆，请确认车牌与管理密码。" }, 404);
-  return json({ ownerToken: vehicle.owner_token, maskedPlate: vehicle.plate_number_masked });
+  return json({ ownerToken: vehicle.owner_token, maskedPlate: await plateDisplay(env, vehicle) });
 }
 
 /* ============================================================
@@ -1398,7 +1400,7 @@ async function callLogToView(env, row) {
     id: row.id,
     vehicleId: row.vehicle_id,
     plateNumber: plate,
-    maskedPlate: row.plate_number_masked || "",
+    maskedPlate: plate,
     channel: row.channel,
     callerNumber: await dec(row.caller_number_enc),
     callerLast4: row.caller_last4 || "",
@@ -1463,7 +1465,7 @@ async function handleAdminLookup({ env, url }) {
   ).bind(vehicle.id).all();
   return json({
     found: true,
-    maskedPlate: vehicle.plate_number_masked,
+    maskedPlate: await plateDisplay(env, vehicle),
     phone,
     channels: availableChannels(vehicle, g),
     smsEnabled: Boolean(vehicle.sms_enabled),
@@ -1582,7 +1584,7 @@ async function adminVehicleView(env, v) {
   return {
     id: v.id,
     plateNumber,
-    maskedPlate: v.plate_number_masked,
+    maskedPlate: plateNumber,
     plateMissing: !v.plate_number_encrypted,
     ownerPhone,
     wechatOpenid,
@@ -1712,9 +1714,9 @@ async function releaseQrForVehicle(env, vehicleId) {
 
 async function handleAdminVehicleOwnerToken({ env, params }) {
   assertConfig(env, ["DB"]);
-  const v = await env.DB.prepare("SELECT id, owner_token, plate_number_masked FROM vehicles WHERE id = ?").bind(Number(params.id)).first();
+  const v = await env.DB.prepare("SELECT id, owner_token, plate_number_masked, plate_number_encrypted FROM vehicles WHERE id = ?").bind(Number(params.id)).first();
   if (!v) return json({ error: "not_found", message: "车辆不存在。" }, 404);
-  return json({ ownerToken: v.owner_token, maskedPlate: v.plate_number_masked });
+  return json({ ownerToken: v.owner_token, maskedPlate: await plateDisplay(env, v) });
 }
 
 async function handleAdminVehicleImport({ request, env }) {
@@ -1805,7 +1807,7 @@ async function handleAdminQrList({ env, url }) {
   const clause = where.length ? `WHERE ${where.join(" AND ")}` : "";
 
   const rows = await env.DB.prepare(
-    `SELECT c.*, v.plate_number_masked AS masked_plate, v.vehicle_token AS vehicle_token
+    `SELECT c.*, v.plate_number_masked AS masked_plate, v.plate_number_encrypted AS encrypted_plate, v.vehicle_token AS vehicle_token
      FROM qr_codes c LEFT JOIN vehicles v ON v.id = c.vehicle_id
      ${clause} ORDER BY c.id DESC LIMIT ? OFFSET ?`
   ).bind(...vals, limit, offset).all();
@@ -1823,18 +1825,23 @@ async function handleAdminQrList({ env, url }) {
     `SELECT batch_no, COUNT(*) AS n FROM qr_codes WHERE batch_no <> '' GROUP BY batch_no ORDER BY batch_no DESC LIMIT 50`
   ).all();
 
-  return json({
-    codes: (rows.results || []).map((r) => ({
+  const codes = [];
+  for (const r of rows.results || []) {
+    codes.push({
       id: r.id,
       codeToken: r.code_token,
       batchNo: r.batch_no,
       status: r.status,
       note: r.note,
-      maskedPlate: r.masked_plate || "",
+      maskedPlate: await plateDisplay(env, { plate_number_masked: r.masked_plate, plate_number_encrypted: r.encrypted_plate }),
       vehicleToken: r.vehicle_token || "",
       boundAt: r.bound_at,
       createdAt: r.created_at,
-    })),
+    });
+  }
+
+  return json({
+    codes,
     total: totalRow?.n || 0,
     stats: {
       total: stats?.total || 0,
@@ -1892,9 +1899,9 @@ async function handleQrResolve({ env, params }) {
   if (!row) return json({ error: "qr_not_found", message: "二维码无效或已被删除。" }, 404);
   if (row.status === "disabled") return json({ error: "qr_disabled", message: "该二维码已被停用。" }, 410);
   if (row.status === "bound" && row.vehicle_id) {
-    const v = await env.DB.prepare("SELECT vehicle_token, plate_number_masked FROM vehicles WHERE id = ?")
+    const v = await env.DB.prepare("SELECT vehicle_token, plate_number_masked, plate_number_encrypted FROM vehicles WHERE id = ?")
       .bind(row.vehicle_id).first();
-    if (v) return json({ status: "bound", vehicleToken: v.vehicle_token, maskedPlate: v.plate_number_masked });
+    if (v) return json({ status: "bound", vehicleToken: v.vehicle_token, maskedPlate: await plateDisplay(env, v) });
     return json({ status: "unbound" }); // 车辆已被删除 → 退回未绑定
   }
   return json({ status: "unbound" });
@@ -1923,7 +1930,7 @@ async function handleQrBind({ request, env, params }) {
       {
         error: "plate_exists",
         message: "该车牌已录入过，一个车牌只能录入一次。请用「车牌 + 管理密码」找回管理入口。",
-        maskedPlate: exists.plate_number_masked,
+        maskedPlate: plate,
         canRecover: Boolean(exists.owner_pin_hash),
       },
       409
@@ -2194,10 +2201,21 @@ function isHttpUrl(value) {
 function isPhone(value) { return /^\+?\d[\d\s-]{6,19}$/.test(String(value || "").trim()); }
 function isPlate(value) { return /^[\u4e00-\u9fa5A-Z0-9]{5,10}$/.test(String(value || "").trim()); }
 function isPin(value) { return /^\d{4,12}$/.test(String(value || "").trim()); }
+// 全站车牌完整显示（不再用 * 打码）：保留函数名兼容旧调用点，直接返回完整车牌
 function maskPlate(value) {
-  const plate = normalizePlate(value);
-  if (plate.length <= 3) return "***";
-  return `${plate.slice(0, 2)}***${plate.slice(-2)}`;
+  return normalizePlate(value);
+}
+// 车牌完整显示（全站不再用 * 打码）：优先解密，老数据没有密文时退回原值
+async function plateDisplay(env, row) {
+  if (!row) return "";
+  if (row.plateDisplay) return row.plateDisplay;
+  if (row.plate_number_encrypted) {
+    try {
+      const full = await decryptText(env, row.plate_number_encrypted);
+      if (full) return full;
+    } catch {}
+  }
+  return row.plate_number_masked || "";
 }
 function maskPhone(value) {
   const p = String(value || "");
